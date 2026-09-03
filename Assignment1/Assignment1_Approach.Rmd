@@ -1,0 +1,13 @@
+---
+title: "Assignment 1: Approach"
+author: "Kevin Villa"
+date: "09/03/2026"
+output:
+  html_document: default
+---
+
+## Approach
+
+So for this assignment, I'm using some baseball statistics I found on Kaggle, specifically my favorite team, the New York Mets. The way I'm going about this is I would load the raw CSV directly from a URL, which would be hosted on my GitHub repository. Then I would clean it into a smaller, analysis-ready data frame. I would narrow it down to a relevant subset, and I would also translate any abbreviations into full, readable names. I would identify a target variable for future analysis.
+
+One of the challenges I think I might run into is that the dataset spans over six decades. So some things, such as column meanings or formatting, might not be fully consistent across all those decades. I'll need to check for any missing values or inconsistencies before I conclude that the data is ready for analysis.
