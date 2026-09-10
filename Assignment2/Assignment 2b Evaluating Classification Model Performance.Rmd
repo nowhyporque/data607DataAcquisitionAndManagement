@@ -1,0 +1,129 @@
+---
+title: "Assignment 2b: Evaluating Classification Model Performance"
+author: "Kevin Villa"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+---
+
+
+## Introduction
+
+We are evaluating a binary classification model that predicts penguin
+sex. The dataset (`penguin_predictions.csv`) has the model's predicted probability
+of "female," its default predicted class, and the actual sex label. The
+goal is to understand how changing the probability threshold affects model
+performance.
+
+```{r setup, include=FALSE}
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(knitr)
+```
+
+## Body
+
+```{r load-data}
+penguins <- read_csv("https://raw.githubusercontent.com/acatlin/data/master/penguin_predictions.csv")
+glimpse(penguins)
+```
+
+```{r null-error-rate}
+
+class_counts <- count(penguins, sex)
+class_counts
+
+majority_count <- max(class_counts$n)
+total <- nrow(penguins)
+null_error_rate <- 1 - (majority_count / total)
+null_error_rate
+```
+
+```{r class-distribution}
+ggplot(penguins, aes(x = sex)) +
+  geom_bar(fill = "steelblue") +
+  labs(title = "Distribution of Actual Sex Class", x = "Sex", y = "Count") +
+  theme_minimal()
+```
+
+```{r confusion-matrices}
+
+threshold_results <- function(threshold) {
+  pred <- ifelse(penguins$.pred_female > threshold, "female", "male")
+
+  TP <- sum(pred == "female" & penguins$sex == "female")
+  FP <- sum(pred == "female" & penguins$sex == "male")
+  TN <- sum(pred == "male"   & penguins$sex == "male")
+  FN <- sum(pred == "male"   & penguins$sex == "female")
+
+  tibble(threshold = threshold, TP = TP, FP = FP, TN = TN, FN = FN)
+}
+
+thresholds <- c(0.2, 0.5, 0.8)
+confusion_table <- bind_rows(lapply(thresholds, threshold_results))
+confusion_table
+```
+
+```{r pretty-confusion-matrices}
+
+for (t in thresholds) {
+  pred <- ifelse(penguins$.pred_female > t, "female", "male")
+
+  cm <- matrix(
+    c(
+      sum(pred == "female" & penguins$sex == "female"),
+      sum(pred == "male"   & penguins$sex == "female"),
+      sum(pred == "female" & penguins$sex == "male"),
+      sum(pred == "male"   & penguins$sex == "male")
+    ),
+    nrow = 2,
+    dimnames = list(
+      "Predicted" = c("Female", "Male"),
+      "Actual"    = c("Female", "Male")
+    )
+  )
+
+  print(paste("Threshold:", t))
+  print(kable(cm))
+}
+```
+
+```{r metrics}
+
+metrics_table <- confusion_table %>%
+  mutate(
+    accuracy  = (TP + TN) / (TP + FP + TN + FN),
+    precision = TP / (TP + FP),
+    recall    = TP / (TP + FN),
+    f1        = 2 * TP / (2 * TP + FP + FN)
+  )
+
+metrics_table
+```
+
+## Conclusions
+
+The null error rate for this dataset is 41.9% always guessing "male"
+(the majority class) would be wrong nearly 42% of the time. Every threshold
+tested dramatically outperforms this baseline, with accuracy ranging from
+91.4% (threshold 0.2) to 94.6% (threshold 0.8), confirming the model carries
+genuine predictive signal rather than just reflecting class imbalance.
+
+As the threshold increases from 0.2 to 0.8, precision rises steadily (0.860
+to 0.947) while recall stays roughly flat (0.949 to 0.923), meaning higher
+thresholds mostly filtered out false positives here without costing many
+true positives, which is why accuracy and F1 both peaked at the highest
+threshold (0.8) for this particular dataset.
+
+**A 0.2 threshold** is better when missing a true positive is costly and
+false alarms are cheap to double check, for example, if researchers are
+using this model to flag candidate female penguins for a follow-up field
+study, they'd rather over flag and manually verify a few extra birds than
+miss real females entirely.
+
+**A 0.8 threshold** is preferable when a false positive carries real
+downstream cost, for example, if the sex prediction feeds directly into a
+genetics or population dataset without human review, a wrongly-labeled
+penguin could quietly corrupt that dataset, so it's worth being more
+conservative before committing to a "female" label.
