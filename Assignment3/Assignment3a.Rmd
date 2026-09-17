@@ -1,0 +1,146 @@
+---
+title: "Assignment 3A: Global Baseline Estimates"
+author: "Kevin Villa"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+---
+
+## Introduction
+
+This analysis uses a Global Baseline Estimate recommender system,
+which is a non-personalized recommendation algorithm, using listener rating data for six songs from The Strokes' album *Reality Awaits*. The goal is to
+predict what a listener would likely rate a song they haven't heard yet,
+using only the overall average rating, that listener's personal rating
+tendency, and that song's overall rating tendency.
+
+```{r setup, include=FALSE}
+library(DBI)
+library(RSQLite)
+library(dplyr)
+```
+
+## Body
+
+```{r create-db}
+con <- dbConnect(RSQLite::SQLite(), "album_ratings.db")
+
+dbExecute(con, "DROP TABLE IF EXISTS ratings;")
+dbExecute(con, "DROP TABLE IF EXISTS songs;")
+dbExecute(con, "DROP TABLE IF EXISTS users;")
+
+dbExecute(con, "
+CREATE TABLE users (
+  user_id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL
+);")
+
+dbExecute(con, "
+CREATE TABLE songs (
+  song_id INTEGER PRIMARY KEY,
+  title TEXT NOT NULL
+);")
+
+dbExecute(con, "
+CREATE TABLE ratings (
+  user_id INTEGER,
+  song_id INTEGER,
+  rating INTEGER CHECK (rating BETWEEN 1 AND 5),
+  PRIMARY KEY (user_id, song_id),
+  FOREIGN KEY (user_id) REFERENCES users(user_id),
+  FOREIGN KEY (song_id) REFERENCES songs(song_id)
+);")
+```
+
+```{r populate-db}
+dbExecute(con, "INSERT INTO users (user_id, name) VALUES
+  (1, 'Person 1'), (2, 'Person 2'), (3, 'Person 3'), (4, 'Person 4'), (5, 'Person 5');")
+
+dbExecute(con, "INSERT INTO songs (song_id, title) VALUES
+  (1, 'Dine and Dash'), (2, 'Lonely in the Future'), (3, 'Going to Babylon'),
+  (4, 'Going Shopping'), (5, \"Liar's Remorse\"), (6, 'Psycho Shit');")
+
+
+dbExecute(con, "INSERT INTO ratings (user_id, song_id, rating) VALUES
+  (1,1,4), (1,2,5), (1,3,5), (1,4,3), (1,5,3), (1,6,2),
+  (2,1,3), (2,2,4), (2,3,5), (2,4,3), (2,5,2), (2,6,2),
+  (3,1,4), (3,2,5), (3,3,3), (3,4,3),          (3,6,2),
+  (4,1,3), (4,2,5), (4,3,3), (4,4,3), (4,5,2), (4,6,2),
+  (5,1,3), (5,2,4), (5,3,3),          (5,5,3), (5,6,3);")
+```
+
+```{r load-data}
+
+ratings_full <- dbGetQuery(con, "
+  SELECT u.name AS listener, s.title AS song, r.rating
+  FROM users u
+  CROSS JOIN songs s
+  LEFT JOIN ratings r
+    ON r.user_id = u.user_id AND r.song_id = s.song_id
+  ORDER BY u.name, s.title;
+")
+
+glimpse(ratings_full)
+```
+
+```{r global-baseline}
+
+global_mean <- mean(ratings_full$rating, na.rm = TRUE)
+global_mean
+
+user_bias <- ratings_full %>%
+  group_by(listener) %>%
+  summarize(user_avg = mean(rating, na.rm = TRUE)) %>%
+  mutate(user_bias = user_avg - global_mean)
+user_bias
+
+song_bias <- ratings_full %>%
+  group_by(song) %>%
+  summarize(song_avg = mean(rating, na.rm = TRUE)) %>%
+  mutate(song_bias = song_avg - global_mean)
+song_bias
+
+baseline_estimates <- ratings_full %>%
+  left_join(user_bias, by = "listener") %>%
+  left_join(song_bias, by = "song") %>%
+  mutate(baseline_estimate = global_mean + user_bias + song_bias)
+
+baseline_estimates
+```
+
+```{r recommendations}
+recommendations <- baseline_estimates %>%
+  filter(is.na(rating)) %>%
+  select(listener, song, baseline_estimate) %>%
+  arrange(listener, desc(baseline_estimate))
+
+recommendations
+```
+
+```{r cleanup}
+dbDisconnect(con)
+```
+
+## Conclusions
+
+The global baseline estimate predicts a rating of 2.61 for Person 3's
+unrated song, "Liar's Remorse," and 2.91 for Person 5's unrated song,
+"Going Shopping." Both predictions land below the overall average of 3.29,
+though for different reasons: Person 3 actually tends to rate songs
+slightly above average (+0.11 bias), but "Liar's Remorse" is one of the
+two lowest-rated songs overall (-0.79 bias), so the song's weakness pulls
+the prediction down despite the listener's generosity. Person 5, on the
+other hand, rates close to the group average (-0.09 bias), and "Going
+Shopping" is also close to average (-0.29 bias), so that estimate lands
+nearer the global mean.
+
+More broadly, "Lonely in the Future" stands out as the strongest song in
+the dataset (+1.31 bias), while "Psycho Shit" is the weakest (-1.09 bias)
+consistent with what a personalized recommender would also need to
+account for, though the global baseline approach intentionally ignores
+individual taste patterns in favor of these simple, broad averages.
+
+Future work could compare these baseline estimates against a personalized
+method like item item collaborative filtering, to see whether accounting
+for individual listener similarity produces meaningfully different (and
+more accurate) predictions than this non-personalized approach.

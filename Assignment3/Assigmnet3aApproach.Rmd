@@ -1,0 +1,26 @@
+---
+title: "Untitled"
+author: "kevin villa"
+date: "2026-09-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Approach
+
+For this assignment, I'm reusing the listener ratings data I collected for
+the SQL and R assignment (five people rating six Strokes tracks from
+*Reality Awaits*). My plan is to implement the Global Baseline Estimate
+algorithm: combine the overall average rating across everyone and every
+song with how far each individual listener and each individual song
+tend to deviate from that average, to predict the two ratings that are
+actually missing from my data.
+
+The main thing to get right is making sure every average is calculated
+only from actual ratings, excluding the missing ones, instead of
+treating a missing rating as a zero which would badly skew the
+averages downward

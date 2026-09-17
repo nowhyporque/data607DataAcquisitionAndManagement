@@ -1,0 +1,107 @@
+---
+title: "Assignment 3b: Window Functions"
+author: "Kevin Villa"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+---
+
+
+## Introduction
+
+This analysis generates a simulated daily price dataset for three
+instruments -- Apple (AAPL), Microsoft (MSFT), and Bitcoin (BTC) -- from
+January 1, 2022 through December 31, 2023, and uses SQL window functions
+to calculate a year-to-date running average and a 6-day moving average
+for each instrument.
+
+```{r setup, include=FALSE}
+library(DBI)
+library(RSQLite)
+library(dplyr)
+library(ggplot2)
+```
+
+## Body
+
+```{r generate-data}
+
+set.seed(607)
+
+dates <- seq(as.Date("2022-01-01"), as.Date("2023-12-31"), by = "day")
+n <- length(dates)
+
+simulate_price <- function(start_price, drift, volatility, n) {
+  changes <- rnorm(n, mean = drift, sd = volatility)
+  pmax(1, round(start_price + cumsum(changes), 2))  
+}
+
+prices <- bind_rows(
+  tibble(ticker = "AAPL", date = dates, price = simulate_price(175,    0.05, 2,   n)),
+  tibble(ticker = "MSFT", date = dates, price = simulate_price(310,    0.08, 3,   n)),
+  tibble(ticker = "BTC",  date = dates, price = simulate_price(46000,  5,    800, n))
+)
+
+glimpse(prices)
+```
+
+```{r load-into-sqlite}
+con <- dbConnect(RSQLite::SQLite(), "prices.db")
+
+
+dbWriteTable(con, "prices", prices, overwrite = TRUE)
+
+dbGetQuery(con, "SELECT COUNT(*) AS row_count FROM prices;")
+```
+
+```{r window-functions}
+
+window_results <- dbGetQuery(con, "
+  SELECT
+    ticker,
+    date,
+    price,
+    ROUND(AVG(price) OVER (
+      PARTITION BY ticker, strftime('%Y', date)
+      ORDER BY date
+      ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    ), 2) AS ytd_avg,
+    ROUND(AVG(price) OVER (
+      PARTITION BY ticker
+      ORDER BY date
+      ROWS BETWEEN 5 PRECEDING AND CURRENT ROW
+    ), 2) AS moving_avg_6day
+  FROM prices
+  ORDER BY ticker, date;
+")
+
+glimpse(window_results)
+head(window_results, 10)
+tail(window_results, 10)
+```
+
+```{r plot}
+window_results$date <- as.Date(window_results$date)
+
+ggplot(window_results, aes(x = date)) +
+  geom_line(aes(y = price, color = "Daily Price"), alpha = 0.3) +
+  geom_line(aes(y = moving_avg_6day, color = "6-Day Moving Avg"), linewidth = 0.6) +
+  geom_line(aes(y = ytd_avg, color = "YTD Avg"), linewidth = 0.6) +
+  facet_wrap(~ ticker, scales = "free_y") +
+  scale_x_date(date_breaks = "6 months", date_labels = "%b %Y") +
+  labs(title = "Price, 6-Day Moving Average, and YTD Average by Instrument",
+       x = "Date", y = "Price", color = "") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r cleanup}
+dbDisconnect(con)
+```
+
+## Conclusions
+
+*(To fill in once the code runs and the plot renders -- will summarize
+how closely the 6-day moving average tracks daily price swings versus
+the smoother, slower-moving YTD average, and note any differences in
+volatility across AAPL, MSFT, and BTC.)*

@@ -1,0 +1,27 @@
+---
+title: "Untitled"
+author: "kevin villa"
+date: "2026-09-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Approach
+
+In this assignment, I'm generating a synthetic daily price dataset for
+three instruments (AAPL, MSFT, and BTC) spanning January 2022 through
+December 2023, using a random walk to simulate realistic price movement.
+My plan is to load this data into a SQLite table, then use real SQL
+window functions not dplyr to calculate two things for each
+instrument a year to date running average and a 6 day moving averge.
+
+The main challenge is making sure the window function logic is correct
+the YTD average needs to reset at the start of each calendar year and
+only look backward from each row, and the 6 day moving
+average needs to average the current day plus the 5 prior days, which
+means the first few days of the dataset won't have a full 6 day window
+to average over.
