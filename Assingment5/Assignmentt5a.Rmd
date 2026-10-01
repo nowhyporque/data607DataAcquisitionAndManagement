@@ -1,0 +1,151 @@
+---
+title: 'Assignment 5A: Airline Delays'
+author: "Kevin Villa"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+## Introduction
+
+This analysis compares arrival delays for two airlines, Alaska and AM West, across five destination cities: Los Angeles, Phoenix, San Diego, San Francisco, and Seattle. The data comes from *Numbersense* by Kaiser Fung and is a well known example of Simpson's Paradox, where a comparison that holds true within every individual subgroup reverses once the subgroups are combined. This file loads the data, tidies it from wide to long format, and compares delay percentages both overall and city by city to see whether that reversal actually happens here.
+
+```{r setup, include=FALSE}
+library(readr)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(knitr)
+```
+
+## Load the Data
+
+The source table is recreated exactly as it appears in the assignment PDF, saved as a wide format CSV with one row per airline/status combination and one column per city.
+
+```{r load-data}
+airline_delays <- read_csv("https://raw.githubusercontent.com/nowhyporque/data607DataAcquisitionAndManagement/refs/heads/main/Assingment5/airline_delays.csv")
+
+kable(airline_delays)
+```
+
+## Handle Missing Data
+
+Every cell in this particular source table is filled in, so there's no actual missing data to deal with here. But since a real world version of this table could easily have a blank cell (a city an airline doesn't fly to, for example), I'm still writing code that would replace any missing count with 0, since a blank cell in this kind of table means "no flights recorded" rather than a true unknown value. This makes the pipeline robust even though it doesn't change anything with this particular dataset.
+
+```{r fill-missing}
+airline_delays <- airline_delays %>%
+  mutate(across(`Los Angeles`:Seattle, ~replace_na(.x, 0)))
+
+kable(airline_delays)
+```
+
+## Tidy: Wide to Long
+
+The source table is wide because each city is its own column. To tidy it, I use `pivot_longer()` so that city becomes a single column of values instead of five separate columns, giving one row per airline/status/city combination.
+
+```{r pivot-long}
+delays_long <- airline_delays %>%
+  pivot_longer(
+    cols = `Los Angeles`:Seattle,
+    names_to = "city",
+    values_to = "count"
+  )
+
+kable(head(delays_long, 10))
+```
+
+## Overall Comparison (Percentage Delayed)
+
+Combining all five cities together, I calculate what percentage of each airline's total flights were delayed.
+
+```{r overall-comparison}
+overall_summary <- delays_long %>%
+  group_by(airline, status) %>%
+  summarize(total = sum(count), .groups = "drop") %>%
+  group_by(airline) %>%
+  mutate(pct = round(total / sum(total) * 100, 2)) %>%
+  ungroup()
+
+overall_delay_pct <- overall_summary %>%
+  filter(status == "delayed") %>%
+  select(airline, pct_delayed = pct)
+
+kable(overall_delay_pct)
+```
+
+```{r overall-chart}
+ggplot(overall_delay_pct, aes(x = airline, y = pct_delayed, fill = airline)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Overall Percentage of Delayed Flights by Airline",
+       x = "Airline", y = "Percent Delayed") +
+  theme_minimal()
+```
+
+Looking at all five cities combined, AM West has a lower overall delay percentage (10.89%) than Alaska (13.27%). Based on this alone, AM West looks like the more reliable airline.
+
+## City by City Comparison (Percentage Delayed)
+
+Now I break the same comparison out by individual city, rather than combining them.
+
+```{r city-comparison}
+city_summary <- delays_long %>%
+  group_by(airline, city, status) %>%
+  summarize(total = sum(count), .groups = "drop") %>%
+  group_by(airline, city) %>%
+  mutate(pct = round(total / sum(total) * 100, 2)) %>%
+  ungroup()
+
+city_delay_pct <- city_summary %>%
+  filter(status == "delayed") %>%
+  select(airline, city, pct_delayed = pct)
+
+kable(city_delay_pct)
+```
+
+```{r city-chart}
+ggplot(city_delay_pct, aes(x = city, y = pct_delayed, fill = airline)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Percentage of Delayed Flights by Airline and City",
+       x = "City", y = "Percent Delayed") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+This is where the story flips. In every single city, Alaska has a *lower* delay percentage than AM West:
+
+- Los Angeles: Alaska 11.09% vs. AM West 14.43%
+- Phoenix: Alaska 5.15% vs. AM West 7.90%
+- San Diego: Alaska 8.62% vs. AM West 14.51%
+- San Francisco: Alaska 16.86% vs. AM West 28.73%
+- Seattle: Alaska 14.21% vs. AM West 23.28%
+
+Alaska is the more reliable airline in every city, yet AM West looked better in the overall comparison above. This is the discrepancy.
+
+## Describing the Discrepancy
+
+The overall comparison says AM West is more reliable (10.89% delayed vs. Alaska's 13.27%), but the city by city comparison says the exact opposite: Alaska is more reliable than AM West in all five cities. These two comparisons directly contradict each other, which is impossible if the two airlines were flying the same routes in the same proportions. Since they aren't, the aggregated number is misleading.
+
+## Explaining the Discrepancy
+
+This is a textbook case of Simpson's Paradox: a trend that's true in every subgroup can reverse when the subgroups are combined, if the subgroups aren't weighted the same way for each group being compared. Here, the "weight" is how many of each airline's flights go to each city.
+
+```{r route-share}
+route_share <- delays_long %>%
+  group_by(airline, city) %>%
+  summarize(total = sum(count), .groups = "drop") %>%
+  group_by(airline) %>%
+  mutate(pct_of_airline_flights = round(total / sum(total) * 100, 1)) %>%
+  ungroup()
+
+kable(route_share %>% select(airline, city, pct_of_airline_flights))
+```
+
+AM West sends 72.7% of all its flights to Phoenix, which happens to be the city with the lowest delay rate for both airlines (5.15% for Alaska, 7.90% for AM West). Because such a huge share of AM West's total flights are Phoenix flights, that low delay rate drags AM West's overall average way down, even though AM West is actually worse than Alaska in Phoenix itself and in every other city.
+
+Alaska, on the other hand, sends 56.8% of its flights to Seattle, which has a much higher delay rate (14.21%) than Phoenix does. Because so much of Alaska's total volume comes from a city with more delays, Alaska's overall average gets pulled up, even though Alaska is the more reliable airline at every individual destination.
+
+In short: the overall numbers aren't really comparing "Alaska vs. AM West" in any fair sense, they're comparing "an airline that flies mostly through a low delay city" vs. "an airline that flies mostly through a higher delay city." Each city's delay rate is a confounding variable here because it's correlated both with the outcome (percent delayed) and with which airline's flights dominate that city's count. The city by city comparison is the fair one, and it shows Alaska is the more reliable airline overall.
+
+## Conclusions
+
+Comparing raw counts or a single combined percentage can hide what's actually happening in the underlying data. Here, aggregating all five cities together made AM West look more reliable than Alaska, but breaking the same data down by city revealed the opposite is true everywhere: Alaska has a lower delay percentage than AM West in Los Angeles, Phoenix, San Diego, San Francisco, and Seattle. The reversal happened because AM West's flight volume is concentrated in Phoenix, a low delay city, while Alaska's volume is concentrated in Seattle, a higher delay city. This is a clear real world example of Simpson's Paradox, and it's a good reminder to check whether a comparison holds up at a more granular level before trusting an aggregated number.

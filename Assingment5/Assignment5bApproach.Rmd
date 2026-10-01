@@ -1,0 +1,19 @@
+---
+title: "Chess ELO Calculations - Approach"
+author: "Kevin Villa"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+---
+
+## Approach
+
+This assignment reuses the Project 1 chess tournament data to see how each player's actual score compared to what their pre tournament rating predicted, using the Elo rating system.
+
+My plan:
+
+1. Reuse the parsing code from Project 1 to pull each player's pair number, name, pre tournament rating, total score, and the pair numbers of everyone they actually played (excluding byes, forfeits, and unplayed rounds, since those don't have a real opponent rating).
+2. For each player, run the Elo expected score formula against every real opponent they faced, using both players' pre tournament ratings, and add those up to get that player's expected score for the whole tournament.
+3. Subtract expected score from actual score for every player, then sort to find the five biggest positive differences (overperformers) and the five biggest negative differences (underperformers).
+
+I expect the biggest overperformers to be lower rated players who beat opponents they weren't predicted to beat, and the biggest underperformers to be higher rated players who lost or drew games they were predicted to win. The formula and its source are cited in the code base file.

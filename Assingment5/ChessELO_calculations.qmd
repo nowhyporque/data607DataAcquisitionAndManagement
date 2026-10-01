@@ -1,0 +1,132 @@
+---
+title: "Chess ELO Calculations"
+author: "Kevin Villa"
+date: 09/29/26
+format: html
+---
+
+## Introduction
+
+This analysis reuses the Project 1 chess tournament cross-table (`tournamentinfo.txt`) to calculate each player's **expected score** for the tournament, based on the Elo rating system, and compares it to their **actual score**. The goal is to find the five players who most overperformed relative to what their pre-tournament rating predicted, and the five who most underperformed.
+
+The Elo formula used to predict the outcome of a single game between two players is:
+
+$$E_A = \frac{1}{1 + 10^{(R_B - R_A)/400}}$$
+
+where $E_A$ is player A's expected score against player B (a number between 0 and 1), $R_A$ is player A's rating, and $R_B$ is player B's rating. A player's expected score for the whole tournament is just the sum of this value across every real game they played.
+
+**Source for the formula:** Elo Rating Algorithm. "The Elo Rating System for Chess and Beyond." YouTube, 15 Feb. 2019, [https://www.youtube.com/watch?v=AsYfbmp0To0](https://www.youtube.com/watch?v=AsYfbmp0To0).
+
+```{r setup}
+#| label: setup
+#| include: false
+library(stringr)
+library(dplyr)
+library(tibble)
+library(knitr)
+```
+
+## Load and Parse the Tournament Data
+
+This is the same parsing logic from Project 1: pull out each player's pair number, name, state, total points, pre tournament rating, and the pair numbers of everyone they actually played (wins, losses, and draws only, byes, forfeits, and unplayed rounds are marked `H`, `U`, or `X` and don't have a real opponent, so they're excluded).
+
+```{r}
+#| label: parse-data
+lines <- readLines("https://raw.githubusercontent.com/nowhyporque/data607DataAcquisitionAndManagement/refs/heads/main/Project1/tournamentinfo.txt")
+
+data_lines <- lines[str_detect(lines, "\\|")]
+data_lines <- data_lines[-(1:2)]
+
+n_players <- length(data_lines) / 2
+players <- vector("list", n_players)
+
+for (i in seq_len(n_players)) {
+  line1 <- data_lines[(i - 1) * 2 + 1]
+  line2 <- data_lines[(i - 1) * 2 + 2]
+
+  f1 <- str_trim(str_split(line1, "\\|")[[1]])
+  f2 <- str_trim(str_split(line2, "\\|")[[1]])
+
+  pair_num     <- as.integer(f1[1])
+  name         <- f1[2]
+  total_pts    <- as.numeric(f1[3])
+  round_fields <- f1[4:10]
+
+  state      <- f2[1]
+  pre_rating <- as.integer(str_match(f2[2], "R:\\s*(\\d+)")[, 2])
+
+  opp_matches   <- str_match(round_fields, "^[WLD]\\s*(\\d+)$")[, 2]
+  opponent_nums <- as.integer(na.omit(opp_matches))
+
+  players[[i]] <- tibble(
+    pair_num = pair_num, name = name, state = state,
+    total_pts = total_pts, pre_rating = pre_rating,
+    opponents = list(opponent_nums)
+  )
+}
+
+players_df <- bind_rows(players)
+glimpse(players_df)
+```
+
+## Calculate Expected Score for Each Player
+
+For every player, I look up the pre tournament rating of each real opponent they faced, run the Elo formula for each of those games, and add the results together. That sum is the player's expected score for the tournament. Then I compare it to their actual score (the `total_pts` column already in the data) to get the difference.
+
+```{r}
+#| label: expected-score
+rating_lookup <- setNames(players_df$pre_rating, as.character(players_df$pair_num))
+
+expected_score_for <- function(own_rating, opponent_nums) {
+  if (length(opponent_nums) == 0) return(0)
+  opp_ratings <- rating_lookup[as.character(opponent_nums)]
+  sum(1 / (1 + 10 ^ ((opp_ratings - own_rating) / 400)))
+}
+
+players_df <- players_df %>%
+  rowwise() %>%
+  mutate(
+    expected_score = round(expected_score_for(pre_rating, opponents), 2),
+    diff = round(total_pts - expected_score, 2)
+  ) %>%
+  ungroup()
+
+results <- players_df %>%
+  select(name, state, pre_rating, total_pts, expected_score, diff) %>%
+  rename(
+    `Player Name` = name,
+    State = state,
+    `Pre-Rating` = pre_rating,
+    `Actual Score` = total_pts,
+    `Expected Score` = expected_score,
+    `Difference` = diff
+  )
+
+kable(head(results, 5))
+```
+
+## Five Players Who Most Overperformed
+
+These are the players whose actual score beat their expected score by the widest margin, they did much better than their pre, tournament rating predicted.
+
+```{r}
+#| label: overperformers
+overperformers <- results %>% arrange(desc(Difference)) %>% head(5)
+kable(overperformers)
+```
+
+## Five Players Who Most Underperformed
+
+These are the players whose actual score fell short of their expected score by the widest margin — they did much worse than their pre-tournament rating predicted.
+
+```{r}
+#| label: underperformers
+underperformers <- results %>% arrange(Difference) %>% head(5)
+kable(underperformers)
+```
+
+## Conclusions
+
+The Elo formula turns the gap between two players' ratings into a probability of winning, and summing that probability across every game a player actually played gives their expected score for the tournament. Comparing that to their real score highlights who beat the odds and who didn't.
+
+The biggest overperformer was Aditya Bajaj, a 1384 rated player who was only expected to score about 1.95 points across the tournament but actually scored a full 6.0,  four points better than predicted. On the other end, Loren Schwiebert, rated 1745, was expected to score around 6.28 points but only managed 3.5, nearly a three point shortfall. Since expected score is built entirely from pre tournament ratings, a large gap like this usually means the player's rating didn't reflect their actual playing strength at the time of this tournament, whether because they'd improved (or declined) since their rating was last updated, or the specific matchups they drew happened to favor (or not favor) them.

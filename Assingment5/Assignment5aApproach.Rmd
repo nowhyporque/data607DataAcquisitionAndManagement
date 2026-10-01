@@ -1,0 +1,19 @@
+---
+title: "Assignment 5A: Airline Delays - Approach"
+author: "Kevin Villa"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+---
+
+## Approach
+
+This dataset (from *Numbersense* by Kaiser Fung) shows on-time and delayed flight counts for two airlines, Alaska and AM West, across five cities: Los Angeles, Phoenix, San Diego, San Francisco, and Seattle.
+
+My plan:
+
+1. Recreate the table as a CSV in the same wide format it's given in (one column per city).
+2. Load it into R and use `tidyr::pivot_longer()` to reshape it into a tidy long format, one row per airline/status/city.
+3. Use `dplyr` to calculate the **percentage** of delayed flights (not raw counts) two ways: overall per airline, and broken out by city.
+
+I expect these two comparisons to disagree. AM West sends most of its flights to Phoenix, a city with a low delay rate, while Alaska sends most of its flights to Seattle, a city with a higher delay rate. That difference in route mix could make AM West look better overall even if Alaska actually has a lower delay percentage in every single city. If that happens, it's a classic case of Simpson's Paradox, where a trend that holds in every subgroup reverses once the subgroups are combined. My code base file will run the numbers, confirm whether this happens, and explain why.
