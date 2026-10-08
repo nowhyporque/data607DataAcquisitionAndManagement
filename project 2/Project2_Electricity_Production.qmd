@@ -1,0 +1,122 @@
+---
+title: "Project 2 — Data Tidying: Electricity Production by Country"
+author: "Kevin Villa"
+date: today
+format:
+  html:
+    toc: true
+    code-fold: true
+    theme: flatly
+execute:
+  echo: true
+  warning: false
+---
+
+## 4. Data Source
+
+This dataset comes from Wikipedia's "List of countries by electricity production," which breaks down each country's electricity generation by source (coal, gas, nuclear, hydro, wind, solar, etc.). This is the same wide format dataset a classmate picked for the Week 5 Discussion 5A post, the generation method is a variable, but it's spread across separate column headers instead of stored as a value, and some of those headers (like "Other" appearing twice, once for other fossil fuels and once for other renewables) are grouped under informal multi level headers on the source page.
+
+Source: Wikipedia, "List of countries by electricity production," `https://en.wikipedia.org/wiki/List_of_countries_by_electricity_production` (data sourced from Ember).
+
+The raw file, preserving the original wide structure with no tidying applied, is committed here:
+
+`https://raw.githubusercontent.com/nowhyporque/data607DataAcquisitionAndManagement/refs/heads/main/project%202/electricity_production_raw.csv`
+
+```{r setup}
+#| label: setup
+#| include: false
+library(readr)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(knitr)
+```
+
+## 5. Data Structure Before Tidying
+
+```{r load-raw}
+#| label: load-raw
+elec_raw <- read_csv("https://raw.githubusercontent.com/nowhyporque/data607DataAcquisitionAndManagement/refs/heads/main/project%202/electricity_production_raw.csv")
+
+glimpse(elec_raw)
+kable(head(elec_raw, 8))
+```
+
+This table has 24 countries (rows) and 10 columns: a `Total_TWh` figure plus nine separate generation-source columns (`Coal`, `Gas`, `Other_Fossil`, `Nuclear`, `Hydro`, `Wind`, `Solar`, `Biofuels`, `Other_Renewable`). Generation source is really one variable with multiple possible values, but here it's spread across nine columns — textbook untidy structure. A number of cells are also blank, representing a country with effectively no reported production from that source (for example, Saudi Arabia has no listed coal generation).
+
+## 6. Transformation Steps
+
+```{r tidy-pipeline}
+#| label: tidy-pipeline
+
+elec_long <- elec_raw %>%
+  pivot_longer(
+    cols = Coal:Other_Renewable,
+    names_to = "source",
+    values_to = "twh"
+  ) %>%
+ 
+  mutate(twh = replace_na(twh, 0)) %>%
+  
+  rename(country = Location, total_twh = Total_TWh) %>%
+  mutate(source = tolower(source))
+
+kable(head(elec_long, 10))
+```
+
+## 7. Analytical Methods
+
+Both business questions from the discussion post were about sustainability: which countries rely most on renewables, and how countries group by their primary energy source. I classify `hydro`, `wind`, `solar`, `biofuels`, and `other_renewable` as renewable sources, and `coal`, `gas`, and `other_fossil` as fossil sources (nuclear is counted as neither, since it's low carbon but not renewable), then calculate each country's percent of total generation from each group.
+
+```{r analysis}
+#| label: analysis
+renewable_sources <- c("hydro", "wind", "solar", "biofuels", "other_renewable")
+fossil_sources <- c("coal", "gas", "other_fossil")
+
+country_mix <- elec_long %>%
+  mutate(category = case_when(
+    source %in% renewable_sources ~ "renewable",
+    source %in% fossil_sources ~ "fossil",
+    TRUE ~ "nuclear"
+  )) %>%
+  group_by(country, total_twh, category) %>%
+  summarize(twh = sum(twh), .groups = "drop") %>%
+  group_by(country) %>%
+  mutate(pct = round(twh / total_twh * 100, 1)) %>%
+  ungroup()
+
+most_renewable <- country_mix %>%
+  filter(category == "renewable") %>%
+  arrange(desc(pct)) %>%
+  select(country, total_twh, pct_renewable = pct)
+
+kable(head(most_renewable, 5), caption = "Most renewable-reliant countries")
+
+most_fossil <- country_mix %>%
+  filter(category == "fossil") %>%
+  arrange(desc(pct)) %>%
+  select(country, total_twh, pct_fossil = pct)
+
+kable(head(most_fossil, 5), caption = "Most fossil-fuel-reliant countries")
+```
+
+```{r chart}
+#| label: chart
+top_renewable_countries <- most_renewable$country[1:10]
+
+ggplot(
+  country_mix %>% filter(country %in% top_renewable_countries),
+  aes(x = reorder(country, pct), y = pct, fill = category)
+) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(title = "Generation Mix, Top 10 Most Renewable-Reliant Countries",
+       x = "Country", y = "Percent of Total Generation", fill = "Source") +
+  theme_minimal()
+```
+
+Brazil is the most renewable reliant country in the dataset at 86.6% (driven mostly by hydropower), followed by Canada (63.9%) and Germany (59.1%). On the other end, Saudi Arabia generates 97.8% of its electricity from fossil fuels, with Iran close behind at 94.3%, both countries with essentially no hydro potential and large domestic oil and gas supplies to draw on instead.
+
+## 8. Conclusions
+
+Tidying this table made it possible to compare countries on a fair, common scale (percent of generation, not raw TWh), since a small country like Saudi Arabia and a huge one like China can't be meaningfully compared on absolute terawatt hours. The renewable share ranges from under 3% (Saudi Arabia) to over 86% (Brazil) across just these 24 countries, which mostly tracks each country's natural resources , Brazil and Canada both have major rivers to generate hydropower, while Gulf states with large oil and gas reserves lean almost entirely on fossil fuels. A useful next step would be to bring in a population or GDP column so the comparison could move from "percent of generation mix" to "renewable TWh per capita," which would separate genuinely clean grids from countries that are simply smaller.
