@@ -1,0 +1,23 @@
+[
+  {
+    "title": "Moneyball: The Art of Winning an Unfair Game",
+    "authors": ["Michael Lewis"],
+    "year": 2003,
+    "publisher": "W. W. Norton & Company",
+    "isbn": "978-0-393-05765-2"
+  },
+  {
+    "title": "The Book: Playing the Percentages in Baseball",
+    "authors": ["Tom M. Tango", "Mitchel G. Lichtman", "Andrew E. Dolphin"],
+    "year": 2007,
+    "publisher": "Potomac Books",
+    "isbn": "978-1-59797-129-4"
+  },
+  {
+    "title": "Analyzing Baseball Data with R, Second Edition",
+    "authors": ["Max Marchi", "Jim Albert", "Benjamin S. Baumer"],
+    "year": 2018,
+    "publisher": "CRC Press",
+    "isbn": "978-0-8153-5351-5"
+  }
+]

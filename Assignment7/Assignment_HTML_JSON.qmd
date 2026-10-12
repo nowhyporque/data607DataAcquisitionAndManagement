@@ -1,0 +1,124 @@
+---
+title: "Assignment: Working with HTML and JSON"
+author: "Kevin Villa"
+date: today
+format:
+  html:
+    toc: true
+    code-fold: false
+execute:
+  echo: true
+  warning: false
+---
+
+## Introduction
+
+This warm up exercise looks at the same data stored in two different file formats, HTML and JSON, and checks whether R reads them into identical data frames. I chose three books on one subject, baseball analytics, and recorded the title, authors, publication year, publisher, and ISBN for each. One of them, *Analyzing Baseball Data with R*, is also the book closest to the kind of work I do, and two of the three have multiple authors.
+
+I created both files by hand. They are publicly available on GitHub:
+
+- HTML: `https://raw.githubusercontent.com/nowhyporque/data607DataAcquisitionAndManagement/refs/heads/main/HTML_JSON/books.html`
+- JSON: `https://raw.githubusercontent.com/nowhyporque/data607DataAcquisitionAndManagement/refs/heads/main/HTML_JSON/books.json`
+
+```{r setup}
+#| label: setup
+#| include: false
+library(rvest)
+library(jsonlite)
+library(dplyr)
+library(tibble)
+library(knitr)
+```
+
+## The Data
+
+| Title | Authors | Year | Publisher | ISBN |
+|---|---|---|---|---|
+| Moneyball: The Art of Winning an Unfair Game | Michael Lewis | 2003 | W. W. Norton & Company | 978-0-393-05765-2 |
+| The Book: Playing the Percentages in Baseball | Tom M. Tango, Mitchel G. Lichtman, Andrew E. Dolphin | 2007 | Potomac Books | 978-1-59797-129-4 |
+| Analyzing Baseball Data with R, Second Edition | Max Marchi, Jim Albert, Benjamin S. Baumer | 2018 | CRC Press | 978-0-8153-5351-5 |
+
+HTML has no built in way to store a list inside a table cell, so in `books.html` the authors for each book sit in a single cell separated by semicolons. In `books.json` the authors are stored as a real array, which is the more natural structure for a list of names.
+
+## Step 1: Load the HTML Data
+
+`read_html()` downloads and parses the page, `html_element("table")` pulls out the table, and `html_table()` turns it into a data frame.
+
+```{r load-html}
+#| label: load-html
+html_url <- "https://raw.githubusercontent.com/nowhyporque/data607DataAcquisitionAndManagement/refs/heads/main/HTML_JSON/books.html"
+
+books_html <- read_html(html_url) %>%
+  html_element("table") %>%
+  html_table()
+
+kable(books_html)
+str(books_html)
+```
+
+## Step 2: Load the JSON Data
+
+`fromJSON()` reads the file straight from the URL. Because each book is an object in a JSON array, it comes back as a data frame with one row per book.
+
+```{r load-json}
+#| label: load-json
+json_url <- "https://raw.githubusercontent.com/nowhyporque/data607DataAcquisitionAndManagement/refs/heads/main/HTML_JSON/books.json"
+
+books_json <- fromJSON(json_url)
+
+books_json
+str(books_json)
+```
+
+Notice the `authors` column. In the JSON data frame it is a list column, where each cell holds a character vector of names, for example:
+
+```{r authors-list}
+#| label: authors-list
+books_json$authors[[2]]
+```
+
+## Step 3: Compare the Two Data Frames
+
+First, a direct comparison of the two data frames exactly as they were loaded.
+
+```{r compare-raw}
+#| label: compare-raw
+identical(books_html, books_json)
+all.equal(books_html, books_json)
+```
+
+They are **not** identical, even though both files describe the same three books. The comparison points to two differences:
+
+1. **The authors column has a different structure.** In the HTML data frame it is a plain text column (`"Tom M. Tango; Mitchel G. Lichtman; Andrew E. Dolphin"`), while in the JSON data frame it is a list column holding a vector of names for each book.
+2. **The data frames are different kinds of objects.** `html_table()` returns a tibble, while `fromJSON()` returns a base R data frame.
+
+## Making the Two Data Frames Comparable
+
+To compare the actual content rather than the formatting, I put both into the same shape. For the JSON data I collapse each authors vector into one text string using the same `"; "` separator as the HTML file, convert it to a tibble, and make sure the year is an integer in both.
+
+```{r clean}
+#| label: clean
+books_html_clean <- books_html %>%
+  mutate(year = as.integer(year))
+
+books_json_clean <- books_json %>%
+  as_tibble() %>%
+  mutate(
+    authors = vapply(authors, paste, character(1), collapse = "; "),
+    year = as.integer(year)
+  )
+
+kable(books_json_clean)
+```
+
+```{r compare-clean}
+#| label: compare-clean
+identical(books_html_clean, books_json_clean)
+all.equal(books_html_clean, books_json_clean)
+```
+
+## Conclusions
+
+Read as they came in, the HTML and JSON data frames are not identical. The content is the same, but the two formats store it differently: HTML can only hold the authors as one block of text in a table cell, while JSON can store them as a proper list, and the two R packages also return different data frame types. After collapsing the JSON authors list into a semicolon separated string and matching the column types, the two data frames are identical.
+
+The main lesson is that the same data can look different in R depending on the format it came from, so comparing data frames usually means cleaning them into a common structure first. This matters for the next weeks, when we load HTML and JSON from the web, because multi valued fields like authors will almost always need this kind of handling.
