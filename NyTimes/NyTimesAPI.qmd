@@ -1,0 +1,161 @@
+ ---
+title: "What Are People Reading on NYTimes.com?"
+subtitle: "Using the NYT Most Popular API in R"
+author: "Kevin Villa"
+date: today
+format:
+  html:
+    embed-resources: true
+execute:
+  warning: false
+  message: false
+---
+
+Which sections of The New York Times produced the most-viewed articles over the past 30 days, and what topics were those articles about?
+
+## Data source
+
+The data comes from the New York Times **Most Popular API**, using this endpoint:
+
+`https://api.nytimes.com/svc/mostpopular/v2/viewed/30.json`
+
+It returns the 20 most-viewed articles on NYTimes.com over a period of 1, 7, or 30 days. Each article comes with its title, section, byline, publish date, topic tags, and images.
+
+| Parameter | Value | Notes |
+|---|---|---|
+| period | `30` | set in the URL path (the past 30 days) |
+| api-key | my NYT API key | stored in the `NYT_API_KEY` environment variable |
+
+The full request, with the key hidden:
+
+```
+https://api.nytimes.com/svc/mostpopular/v2/viewed/30.json?api-key=HIDDEN
+```
+
+## Setup
+
+```{r}
+library(httr2)
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(tibble)
+library(ggplot2)
+
+api_key <- Sys.getenv("NYT_API_KEY")
+if (api_key == "") {
+  stop("NYT_API_KEY is not set. Add it to .Renviron and restart R.")
+}
+```
+
+The API key is read from my `.Renviron` file, so it does not appear anywhere in this document.
+
+## Pulling the data
+
+```{r}
+resp <- request("https://api.nytimes.com/svc/mostpopular/v2/viewed/30.json") |>
+  req_url_query(`api-key` = api_key) |>
+  req_error(is_error = \(r) FALSE) |>
+  req_perform()
+
+if (resp_status(resp) != 200) {
+  stop("Request failed with status ", resp_status(resp))
+}
+
+resp_status(resp)
+```
+
+A status of 200 means the request worked.
+
+```{r}
+raw <- resp_body_json(resp)
+names(raw)
+raw$num_results
+
+results <- raw$results
+names(results[[1]])
+```
+
+The JSON comes back as nested lists. The articles are stored in `results`, one list per article, and each article has `r length(results[[1]])` fields.
+
+## Building the data frames
+
+```{r}
+articles <- tibble(
+  rank       = seq_along(results),
+  title      = map_chr(results, "title", .default = NA_character_),
+  section    = map_chr(results, "section", .default = NA_character_),
+  subsection = map_chr(results, "subsection", .default = NA_character_),
+  byline     = map_chr(results, "byline", .default = NA_character_),
+  type       = map_chr(results, "type", .default = NA_character_),
+  published  = map_chr(results, "published_date", .default = NA_character_),
+  caption    = map_chr(results, list("media", 1, "caption"),
+                       .default = NA_character_),
+  url        = map_chr(results, "url", .default = NA_character_)
+) |>
+  mutate(
+    published = as.Date(published),
+    byline    = sub("^By ", "", byline),
+    across(c(subsection, byline, caption), \(x) na_if(trimws(x), ""))
+  )
+
+glimpse(articles)
+colSums(is.na(articles))
+```
+
+`articles` has one row per article.
+
+```{r}
+topics <- tibble(
+  rank  = seq_along(results),
+  topic = map(results, \(a) unlist(a$des_facet))
+) |>
+  unnest_longer(topic) |>
+  filter(!startsWith(topic, "internal-"))
+
+head(topics, 10)
+```
+
+`topics` has one row for each topic tag on each article.
+
+## Cleaning notes
+
+- **Nested fields:** `media` is a list of images, and each image has its own list of sizes. I kept only the caption of the first image. The topic tags (`des_facet`) are also a list inside each article, so I put them in a separate long table instead of cramming them into one column.
+- **Missing values:** Most articles have an empty `subsection`, and some have no byline or no image. I changed empty text to `NA` and kept every article.
+- **Internal tags:** A few articles carry tags that start with `internal-`. These are NYT website settings, not topics, so I removed them.
+- **Types and text:** I converted `published_date` from text to a date and removed "By " from the bylines.
+- **Fields left out:** IDs, `adx_keywords`, and the people, place, and organization tags, since they don't relate to the question.
+
+## Results
+
+```{r}
+articles |>
+  mutate(published = format(published, "%b %d")) |>
+  select(rank, title, section, published) |>
+  knitr::kable()
+```
+
+```{r}
+by_section <- articles |> count(section, sort = TRUE)
+
+ggplot(by_section, aes(x = n, y = reorder(section, n))) +
+  geom_col(fill = "#2a78d6", width = 0.6) +
+  geom_text(aes(label = n), hjust = -0.4, color = "#1F2933") +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.12))) +
+  labs(title = "Sections of the 20 most-viewed NYT articles",
+       subtitle = "Past 30 days",
+       x = "Articles", y = NULL,
+       caption = "Source: NYT Most Popular API") +
+  theme_minimal(base_size = 14) +
+  theme(plot.title.position = "plot",
+        plot.title = element_text(face = "bold", size = 13),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor = element_blank())
+```
+
+```{r}
+top_topics <- topics |> count(topic, sort = TRUE) |> head(5)
+knitr::kable(top_topics)
+```
+
+The `r by_section$section[1]` section had the most articles in the top 20, with `r by_section$n[1]` of `r nrow(articles)`, followed by `r by_section$section[2]` with `r by_section$n[2]`. The most common topic tag was "`r top_topics$topic[1]`," which appeared on `r top_topics$n[1]` articles. The list changes every day, so these results describe the 30 days before `r format(Sys.Date(), "%B %d, %Y")`.
