@@ -1,0 +1,282 @@
+---
+title: "Four Questions About the Nobel Prize"
+subtitle: "Working with JSON from the Nobel Prize API in R"
+author: "Kevin Villa"
+date: today
+format:
+  html:
+    embed-resources: true
+    toc: true
+execute:
+  warning: false
+  message: false
+---
+
+The Nobel Prize organization publishes its data through a free public API (version 2.1) at `https://api.nobelprize.org/2.1`. This report uses both of its main endpoints:
+
+- `/laureates`: one record per laureate (person or organization), with birth details, gender, and every prize they won, including where they worked at the time.
+- `/nobelPrizes`: one record per prize (category and year), with the prize amount and the list of laureates.
+
+No API key is needed.
+
+## Getting the data
+
+```{r}
+library(httr2)
+library(jsonlite)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(ggplot2)
+```
+
+Both endpoints return at most 1,000 records per request, so this function keeps requesting the next page until a page comes back short.
+
+```{r}
+get_all <- function(endpoint) {
+  records <- list()
+  offset <- 0
+  repeat {
+    page <- request(paste0("https://api.nobelprize.org/2.1/", endpoint)) |>
+      req_url_query(offset = offset, limit = 1000) |>
+      req_perform() |>
+      resp_body_json()
+    records <- c(records, page[[endpoint]])
+    if (length(page[[endpoint]]) < 1000) break
+    offset <- offset + 1000
+  }
+  records
+}
+
+laureates_raw <- get_all("laureates")
+prizes_raw    <- get_all("nobelPrizes")
+
+length(laureates_raw)
+length(prizes_raw)
+```
+
+## Turning the JSON into tidy data frames
+
+The JSON is deeply nested. A laureate holds a list of prizes, each prize holds a list of affiliations, and most text fields hold one value per language (`en`, `se`, `no`). I pulled out the English values and built three tidy tables.
+
+```{r}
+laureates <- tibble(
+  id            = map_chr(laureates_raw, "id"),
+  type          = if_else(map_lgl(laureates_raw, \(x) is.null(x$orgName)),
+                          "person", "organization"),
+  name          = map_chr(laureates_raw, \(x) x$knownName$en %||% x$orgName$en),
+  gender        = map_chr(laureates_raw, "gender", .default = NA_character_),
+  birth_date    = map_chr(laureates_raw, list("birth", "date"), .default = NA_character_),
+  birth_country = map_chr(laureates_raw, list("birth", "place", "countryNow", "en"),
+                          .default = NA_character_)
+) |>
+  mutate(
+    birth_year = as.integer(substr(birth_date, 1, 4)),
+    birth_country = case_when(
+      birth_country %in% c("Scotland", "Northern Ireland") ~ "United Kingdom",
+      birth_country == "Faroe Islands (Denmark)" ~ "Denmark",
+      birth_country == "Guadeloupe, France" ~ "France",
+      .default = birth_country
+    )
+  )
+
+awards <- map(laureates_raw, \(x) {
+  map(x$nobelPrizes, \(p) tibble(
+    id                  = x$id,
+    award_year          = as.integer(p$awardYear),
+    category            = p$category$en,
+    portion             = p$portion,
+    prize_status        = p$prizeStatus,
+    affiliation         = pluck(p, "affiliations", 1, "nameNow", "en",
+                                .default = NA_character_),
+    affiliation_country = pluck(p, "affiliations", 1, "countryNow", "en",
+                                .default = NA_character_)
+  )) |>
+    list_rbind()
+}) |>
+  list_rbind()
+
+prizes <- tibble(
+  award_year            = as.integer(map_chr(prizes_raw, "awardYear")),
+  category              = map_chr(prizes_raw, list("category", "en")),
+  prize_amount          = map_dbl(prizes_raw, "prizeAmount"),
+  prize_amount_adjusted = map_dbl(prizes_raw, "prizeAmountAdjusted"),
+  n_laureates           = map_int(prizes_raw, \(p) length(p$laureates))
+)
+
+glimpse(laureates)
+glimpse(awards)
+glimpse(prizes)
+```
+
+- `laureates` has one row per laureate.
+- `awards` has one row per laureate per prize, so people who won twice, like Marie Curie, have two rows.
+- `prizes` has one row per category per year.
+
+A few cleaning choices:
+
+- Organizations have no gender or birth date, so those fields are `NA` for them.
+- Some birth dates have an unknown month and day (for example `1898-00-00`), so I kept only the year.
+- Many laureates in Peace and Literature have no affiliation, so `affiliation` is `NA` for them.
+- Prizes that were never awarded, such as during the World Wars, have zero laureates.
+- Birth countries list Scotland and Northern Ireland separately, but affiliations only use "United Kingdom." I combined them so a Scottish scientist working in Edinburgh isn't counted as having left home. I did the same for the Faroe Islands (Denmark) and Guadeloupe (France).
+
+## Question 1: Are Nobel Prizes shared more often now than in the past?
+
+Each prize can go to up to three laureates. Using the `/nobelPrizes` data, I counted the laureates on every prize that was awarded and averaged them by decade.
+
+```{r}
+not_awarded <- prizes |> filter(n_laureates == 0)
+
+sharing <- prizes |>
+  filter(n_laureates > 0) |>
+  mutate(decade = award_year %/% 10 * 10) |>
+  group_by(decade) |>
+  summarise(prizes = n(),
+            avg_laureates = mean(n_laureates),
+            share_split_three = mean(n_laureates == 3))
+
+ggplot(sharing, aes(decade, avg_laureates)) +
+  geom_line(color = "#2a78d6", linewidth = 1) +
+  geom_point(color = "#2a78d6", size = 2.5) +
+  scale_x_continuous(breaks = seq(1900, 2020, 20)) +
+  labs(title = "Average number of laureates per Nobel Prize, by decade",
+       x = NULL, y = "Laureates per prize") +
+  theme_minimal()
+
+sharing_by_category <- prizes |>
+  filter(n_laureates > 0) |>
+  mutate(period = if_else(award_year < 1950, "1901-1949", "2000 onward")) |>
+  filter(award_year < 1950 | award_year >= 2000) |>
+  group_by(category, period) |>
+  summarise(avg_laureates = mean(n_laureates), .groups = "drop") |>
+  pivot_wider(names_from = period, values_from = avg_laureates)
+
+knitr::kable(sharing_by_category, digits = 2)
+
+first_dec <- sharing |> slice_min(decade, n = 1)
+last_dec  <- sharing |> slice_max(decade, n = 1)
+```
+
+**Answer:** Yes. In the `r first_dec$decade`s, a prize went to `r round(first_dec$avg_laureates, 2)` laureates on average. In the `r last_dec$decade`s, the average is `r round(last_dec$avg_laureates, 2)`, and `r scales::percent(last_dec$share_split_three, accuracy = 1)` of prizes were split three ways. The table shows that the change comes from the science prizes. Literature has almost always gone to a single winner. Separately, `r nrow(not_awarded)` prizes were never awarded at all, `r sum(between(not_awarded$award_year, 1914, 1918) | between(not_awarded$award_year, 1939, 1945))` of them during the two World Wars.
+
+## Question 2: How old are laureates when they win, and has that changed?
+
+This joins each award to the laureate's birth year and subtracts. Because some birth dates are missing the month and day, ages can be off by up to one year.
+
+```{r}
+ages <- awards |>
+  inner_join(laureates |> filter(type == "person"), by = "id") |>
+  filter(!is.na(birth_year)) |>
+  mutate(age = award_year - birth_year,
+         era = if_else(award_year < 1960, "1901-1959", "1960 onward"))
+
+age_by_category <- ages |>
+  group_by(category, era) |>
+  summarise(median_age = median(age), .groups = "drop") |>
+  pivot_wider(names_from = era, values_from = median_age)
+
+knitr::kable(age_by_category)
+
+ggplot(ages, aes(award_year, age)) +
+  geom_point(alpha = 0.3, color = "#2a78d6") +
+  geom_smooth(method = "loess", se = FALSE, color = "#eb6834") +
+  facet_wrap(~category) +
+  labs(title = "Age of laureates at the time of their award",
+       x = "Award year", y = "Age") +
+  theme_minimal()
+
+youngest <- ages |> slice_min(age, n = 1, with_ties = FALSE)
+oldest   <- ages |> slice_max(age, n = 1, with_ties = FALSE)
+
+went_down <- age_by_category |>
+  filter(`1960 onward` < `1901-1959`) |>
+  pull(category)
+```
+
+**Answer:** The median age at the time of the award is `r median(ages$age)`. `r youngest$name` is the youngest laureate, winning the `r youngest$category` prize in `r youngest$award_year` at about `r youngest$age`. `r oldest$name` is the oldest, winning the `r oldest$category` prize in `r oldest$award_year` at about `r oldest$age`. The table compares each category before and after 1960. The median age went up in every category except `r if (length(went_down) == 0) "none" else paste(went_down, collapse = " and ")`.
+
+## Question 3: When did each category get its first woman, and how has that changed?
+
+This filters the awards to people, joins on gender, and finds the earliest award to a woman in each category.
+
+```{r}
+person_awards <- awards |>
+  inner_join(laureates |> filter(type == "person"), by = "id")
+
+first_women <- person_awards |>
+  filter(gender == "female") |>
+  group_by(category) |>
+  slice_min(award_year, n = 1, with_ties = FALSE) |>
+  ungroup() |>
+  select(category, award_year, name) |>
+  arrange(award_year)
+
+knitr::kable(first_women, col.names = c("Category", "Year", "First woman laureate"))
+
+women_by_decade <- person_awards |>
+  mutate(decade = award_year %/% 10 * 10) |>
+  group_by(decade) |>
+  summarise(share_women = mean(gender == "female"))
+
+ggplot(women_by_decade, aes(decade, share_women)) +
+  geom_col(fill = "#2a78d6") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_x_continuous(breaks = seq(1900, 2020, 20)) +
+  labs(title = "Share of Nobel Prizes awarded to women, by decade",
+       x = NULL, y = NULL) +
+  theme_minimal()
+
+recent <- women_by_decade |> slice_max(decade, n = 1)
+```
+
+**Answer:** `r first_women$name[1]` was the first woman to win, in `r first_women$category[1]` in `r first_women$award_year[1]`. The last category to award a woman was `r first_women$category[nrow(first_women)]`, in `r first_women$award_year[nrow(first_women)]`. Overall, women have received `r scales::percent(mean(person_awards$gender == "female"), accuracy = 0.1)` of all prizes awarded to people. The share is rising, reaching `r scales::percent(recent$share_women, accuracy = 1)` in the `r recent$decade`s.
+
+## Question 4: Which countries lose the most laureates to other countries?
+
+This compares two fields for every laureate: the country they were born in, and the country of the institution they were working at when they won. Both use today's country names, so they can be compared directly. A laureate counts as having left if the two countries are different. I counted each person once, using their first prize, and left out laureates with no affiliation (mostly Peace and Literature).
+
+```{r}
+moves <- awards |>
+  inner_join(laureates |> filter(type == "person"), by = "id") |>
+  filter(!is.na(birth_country), !is.na(affiliation_country)) |>
+  group_by(id) |>
+  slice_min(award_year, n = 1, with_ties = FALSE) |>
+  ungroup() |>
+  mutate(left_home = birth_country != affiliation_country)
+
+lost <- moves |>
+  filter(left_home) |>
+  count(birth_country, name = "laureates_lost", sort = TRUE)
+
+gained <- moves |>
+  filter(left_home) |>
+  count(affiliation_country, name = "laureates_gained", sort = TRUE)
+
+knitr::kable(head(lost, 10), col.names = c("Born in", "Laureates who won while working elsewhere"))
+knitr::kable(head(gained, 10), col.names = c("Working in", "Laureates born elsewhere"))
+
+top_lost <- lost |> slice_head(n = 10)
+where_they_went <- moves |>
+  filter(left_home, birth_country %in% top_lost$birth_country) |>
+  count(birth_country, affiliation_country) |>
+  group_by(birth_country) |>
+  slice_max(n, n = 1, with_ties = FALSE) |>
+  ungroup()
+
+ggplot(top_lost, aes(laureates_lost, reorder(birth_country, laureates_lost))) +
+  geom_col(fill = "#2a78d6", width = 0.7) +
+  labs(title = "Countries that lost the most future laureates",
+       subtitle = "Born there, but working in another country when they won",
+       x = "Laureates", y = NULL) +
+  theme_minimal()
+
+knitr::kable(where_they_went,
+             col.names = c("Born in", "Most common destination", "Laureates"))
+```
+
+**Answer:** Of the `r nrow(moves)` laureates with both a birth country and an affiliation, `r sum(moves$left_home)` (`r scales::percent(mean(moves$left_home), accuracy = 1)`) won while working outside the country where they were born. `r if (lost$laureates_lost[1] == lost$laureates_lost[2]) paste0(lost$birth_country[1], " and ", lost$birth_country[2], " are tied for the most, with ", lost$laureates_lost[1], " each.") else paste0(lost$birth_country[1], " lost the most, with ", lost$laureates_lost[1], " laureates, followed by ", lost$birth_country[2], " with ", lost$laureates_lost[2], ".")` `r gained$affiliation_country[1]` gained by far the most, with `r gained$laureates_gained[1]` laureates who were born somewhere else. Two things to keep in mind. First, the API records where laureates worked, not their citizenship, so this measures where they did their prize-winning work rather than which passport they held. Second, birth countries use today's borders. Someone born in Breslau when it was part of Germany counts as born in Poland, which is part of why Poland ranks high.
+
+## Source
+
+Data from the Nobel Prize API v2.1 (<https://api.nobelprize.org/2.1>), published by Nobel Prize Outreach under its [terms of use](https://www.nobelprize.org/about/terms-of-use-for-api-nobelprize-org-and-data-nobelprize-org/).
