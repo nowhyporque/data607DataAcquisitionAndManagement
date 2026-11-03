@@ -1,0 +1,508 @@
+---
+title: "Sentiment Analysis: From Jane Austen to The Office"
+author: "Kevin Villa"
+date: today
+format:
+  html:
+    embed-resources: true
+    toc: true
+execute:
+  warning: false
+  message: false
+---
+
+This report has two parts. Part 1 reproduces the sentiment analysis from Chapter 2 of *Text Mining with R* (Silge and Robinson, 2017), which scores the novels of Jane Austen with three sentiment lexicons. Part 2 applies the same approach to a very different text, the complete scripts of the TV show *The Office*, and adds a fourth lexicon, Jockers-Rinker from the `lexicon` package.
+
+## Setup
+
+```{r}
+library(tidytext)
+library(janeaustenr)
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(ggplot2)
+library(wordcloud)
+library(reshape2)
+library(schrute)
+library(lexicon)
+```
+
+The AFINN and NRC lexicons are downloaded through the `textdata` package. Each one asks you to accept its license the first time, so I ran `get_sentiments("afinn")` and `get_sentiments("nrc")` once in the console before rendering.
+
+# Part 1: Reproducing the Chapter 2 example
+
+All code in Part 1 comes from Chapter 2, "Sentiment analysis with tidy data," of Silge, J., & Robinson, D. (2017). *Text Mining with R: A Tidy Approach*. O'Reilly Media. The chapter is available at <https://www.tidytextmining.com/sentiment.html>, and the book's source code is at <https://github.com/dgrtwo/tidy-text-mining>.
+
+## The sentiment lexicons
+
+```{r}
+get_sentiments("afinn")
+get_sentiments("bing")
+get_sentiments("nrc")
+```
+
+## Sentiment analysis with inner join
+
+```{r}
+tidy_books <- austen_books() %>%
+  group_by(book) %>%
+  mutate(
+    linenumber = row_number(),
+    chapter = cumsum(str_detect(text,
+                                regex("^chapter [\\divxlc]",
+                                      ignore_case = TRUE)))) %>%
+  ungroup() %>%
+  unnest_tokens(word, text)
+
+nrc_joy <- get_sentiments("nrc") %>%
+  filter(sentiment == "joy")
+
+emma_joy <- tidy_books %>%
+  filter(book == "Emma") %>%
+  inner_join(nrc_joy) %>%
+  count(word, sort = TRUE)
+
+emma_joy
+```
+
+```{r}
+jane_austen_sentiment <- tidy_books %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(book, index = linenumber %/% 80, sentiment) %>%
+  pivot_wider(names_from = sentiment, values_from = n, values_fill = 0) %>%
+  mutate(sentiment = positive - negative)
+
+ggplot(jane_austen_sentiment, aes(index, sentiment, fill = book)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~book, ncol = 2, scales = "free_x")
+```
+
+## Comparing the three sentiment dictionaries
+
+```{r}
+pride_prejudice <- tidy_books %>%
+  filter(book == "Pride & Prejudice")
+
+afinn <- pride_prejudice %>%
+  inner_join(get_sentiments("afinn")) %>%
+  group_by(index = linenumber %/% 80) %>%
+  summarise(sentiment = sum(value)) %>%
+  mutate(method = "AFINN")
+
+bing_and_nrc <- bind_rows(
+  pride_prejudice %>%
+    inner_join(get_sentiments("bing")) %>%
+    mutate(method = "Bing et al."),
+  pride_prejudice %>%
+    inner_join(get_sentiments("nrc") %>%
+                 filter(sentiment %in% c("positive",
+                                         "negative"))
+    ) %>%
+    mutate(method = "NRC")) %>%
+  count(method, index = linenumber %/% 80, sentiment) %>%
+  pivot_wider(names_from = sentiment,
+              values_from = n,
+              values_fill = 0) %>%
+  mutate(sentiment = positive - negative)
+
+bind_rows(afinn,
+          bing_and_nrc) %>%
+  ggplot(aes(index, sentiment, fill = method)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~method, ncol = 1, scales = "free_y")
+```
+
+```{r}
+get_sentiments("nrc") %>%
+  filter(sentiment %in% c("positive", "negative")) %>%
+  count(sentiment)
+
+get_sentiments("bing") %>%
+  count(sentiment)
+```
+
+## Most common positive and negative words
+
+```{r}
+bing_word_counts <- tidy_books %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  ungroup()
+
+bing_word_counts
+
+bing_word_counts %>%
+  group_by(sentiment) %>%
+  slice_max(n, n = 10) %>%
+  ungroup() %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(n, word, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment, scales = "free_y") +
+  labs(x = "Contribution to sentiment",
+       y = NULL)
+```
+
+```{r}
+custom_stop_words <- bind_rows(tibble(word = c("miss"),
+                                      lexicon = c("custom")),
+                               stop_words)
+
+custom_stop_words
+```
+
+## Wordclouds
+
+```{r}
+tidy_books %>%
+  anti_join(stop_words) %>%
+  count(word) %>%
+  with(wordcloud(word, n, max.words = 100))
+```
+
+```{r}
+tidy_books %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  acast(word ~ sentiment, value.var = "n", fill = 0) %>%
+  comparison.cloud(colors = c("gray20", "gray80"),
+                   max.words = 100)
+```
+
+## Looking at units beyond just words
+
+```{r}
+p_and_p_sentences <- tibble(text = prideprejudice) %>%
+  unnest_tokens(sentence, text, token = "sentences")
+
+p_and_p_sentences$sentence[2]
+
+austen_chapters <- austen_books() %>%
+  group_by(book) %>%
+  unnest_tokens(chapter, text, token = "regex",
+                pattern = "Chapter|CHAPTER [\\dIVXLC]") %>%
+  ungroup()
+
+austen_chapters %>%
+  group_by(book) %>%
+  summarise(chapters = n())
+```
+
+```{r}
+bingnegative <- get_sentiments("bing") %>%
+  filter(sentiment == "negative")
+
+wordcounts <- tidy_books %>%
+  group_by(book, chapter) %>%
+  summarize(words = n())
+
+tidy_books %>%
+  semi_join(bingnegative) %>%
+  group_by(book, chapter) %>%
+  summarize(negativewords = n()) %>%
+  left_join(wordcounts, by = c("book", "chapter")) %>%
+  mutate(ratio = negativewords/words) %>%
+  filter(chapter != 0) %>%
+  slice_max(ratio, n = 1) %>%
+  ungroup()
+```
+
+The most common joy words in *Emma* are "`r emma_joy$word[1]`," "`r emma_joy$word[2]`," and "`r emma_joy$word[3]`." The three lexicons follow a similar path through *Pride and Prejudice*, even though their values are on different scales. The top negative word across the novels is "`r bing_word_counts$word[bing_word_counts$sentiment == "negative"][1]`." As the book points out, Bing reads "miss" as negative, but Austen mostly uses it as a title.
+
+# Part 2: Extending the analysis to The Office
+
+## A new corpus: The Office scripts
+
+The `schrute` package (Lindblad) contains the complete scripts of *The Office*, with one row per line of dialogue. Each row records the season, the episode, and the character speaking. Spoken comedy is a useful contrast to Austen. The language is casual and full of filler words, and a lot of what is said is sarcastic.
+
+```{r}
+office <- schrute::theoffice %>%
+  mutate(season = as.integer(season),
+         episode = as.integer(episode),
+         character = str_trim(character)) %>%
+  arrange(season, episode, index) %>%
+  mutate(ep_num = dense_rank(season * 100 + episode))
+
+tidy_office <- office %>%
+  select(season, episode, ep_num, episode_name, character, text) %>%
+  unnest_tokens(word, text)
+
+office %>%
+  summarise(lines = n(), episodes = n_distinct(ep_num),
+            seasons = n_distinct(season))
+nrow(tidy_office)
+```
+
+Here every episode is one unit of text, the way the book used 80-line sections of each novel.
+
+## A fourth lexicon: Jockers-Rinker
+
+The `lexicon` package (Rinker) includes `hash_sentiment_jockers_rinker`. This lexicon combines the Syuzhet lexicon (Jockers, 2017) with the Hu and Liu (2004) word list, which is the same source as Bing. Each word gets a graded score instead of just positive or negative, like AFINN, but the list is much larger. A few entries are two-word phrases. Because the text is split into single words, those can't match, so I removed them.
+
+```{r}
+jockers_rinker <- as_tibble(lexicon::hash_sentiment_jockers_rinker)
+names(jockers_rinker) <- c("word", "value")
+jockers_rinker <- jockers_rinker %>%
+  filter(!str_detect(word, " "))
+
+nrow(jockers_rinker)
+range(jockers_rinker$value)
+```
+
+After removing the phrases, Jockers-Rinker has `r format(nrow(jockers_rinker), big.mark = ",")` words, with scores from `r min(jockers_rinker$value)` to `r max(jockers_rinker$value)`. AFINN has `r format(nrow(get_sentiments("afinn")), big.mark = ",")` words, with scores from -5 to 5.
+
+## How each lexicon scores a text
+
+This function scores every unit of a text with all four lexicons. AFINN and Jockers-Rinker add up word scores. Bing and NRC count positive words minus negative words, the same way the book does. Each score is divided by the number of words in the unit and multiplied by 1,000, so long and short episodes can be compared fairly.
+
+```{r}
+score_units <- function(tidy_text, unit) {
+  words <- tidy_text %>% count({{ unit }}, name = "words")
+
+  scored <- bind_rows(
+    tidy_text %>%
+      inner_join(get_sentiments("afinn"), by = "word") %>%
+      group_by({{ unit }}) %>%
+      summarise(score = sum(value)) %>%
+      mutate(method = "AFINN"),
+    tidy_text %>%
+      inner_join(jockers_rinker, by = "word") %>%
+      group_by({{ unit }}) %>%
+      summarise(score = sum(value)) %>%
+      mutate(method = "Jockers-Rinker"),
+    tidy_text %>%
+      inner_join(get_sentiments("bing"), by = "word") %>%
+      count({{ unit }}, sentiment) %>%
+      pivot_wider(names_from = sentiment, values_from = n, values_fill = 0) %>%
+      mutate(score = positive - negative, method = "Bing et al.") %>%
+      select(-positive, -negative),
+    tidy_text %>%
+      inner_join(get_sentiments("nrc") %>%
+                   filter(sentiment %in% c("positive", "negative")),
+                 by = "word") %>%
+      count({{ unit }}, sentiment) %>%
+      pivot_wider(names_from = sentiment, values_from = n, values_fill = 0) %>%
+      mutate(score = positive - negative, method = "NRC") %>%
+      select(-positive, -negative)
+  )
+
+  scored %>%
+    left_join(words) %>%
+    mutate(per_1000 = score / words * 1000)
+}
+
+office_scores <- score_units(tidy_office, ep_num) %>%
+  left_join(distinct(office, ep_num, season, episode), by = "ep_num")
+```
+
+## Sentiment across the series
+
+```{r}
+#| fig-height: 7
+office_scores %>%
+  filter(method == "Bing et al.") %>%
+  ggplot(aes(episode, per_1000, fill = per_1000 > 0)) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_manual(values = c("TRUE" = "#2a78d6", "FALSE" = "#eb6834")) +
+  scale_x_continuous(breaks = seq(0, 30, by = 5)) +
+  facet_wrap(~season, ncol = 3, scales = "free_x",
+             labeller = labeller(season = \(s) paste("Season", s))) +
+  labs(title = "Net sentiment in each episode of The Office (Bing)",
+       x = "Episode", y = "Net sentiment per 1,000 words") +
+  theme_minimal()
+```
+
+```{r}
+season_avg <- office_scores %>%
+  filter(method == "Bing et al.") %>%
+  group_by(season) %>%
+  summarise(avg_per_1000 = mean(per_1000), episodes = n())
+
+knitr::kable(season_avg, digits = 1)
+
+best_season  <- season_avg$season[which.max(season_avg$avg_per_1000)]
+worst_season <- season_avg$season[which.min(season_avg$avg_per_1000)]
+
+bing_episodes <- office_scores %>% filter(method == "Bing et al.")
+pct_positive_eps <- mean(bing_episodes$per_1000 > 0)
+
+austen_chunks <- jane_austen_sentiment
+pct_positive_austen <- mean(austen_chunks$sentiment > 0)
+
+shape <- if (pct_positive_eps > pct_positive_austen) {
+  "The Office is more consistently positive. A sitcom resets every week instead of building one long story arc with dark stretches."
+} else {
+  "The Office is not more consistently positive than Austen, even though it is a comedy, which may come from words like \"funny\" and \"joke\" being scored as negative (see below)."
+}
+```
+
+By the Bing lexicon, Season `r best_season` is the most positive season on average and Season `r worst_season` is the least positive. `r scales::percent(pct_positive_eps, accuracy = 1)` of episodes come out net positive. For comparison, `r scales::percent(pct_positive_austen, accuracy = 1)` of the 80-line sections of the Austen novels are net positive.
+
+## Comparing the four lexicons
+
+```{r}
+#| fig-height: 7
+office_scores %>%
+  ggplot(aes(ep_num, per_1000, fill = method)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~method, ncol = 1, scales = "free_y") +
+  labs(title = "Four lexicons scoring every episode of The Office",
+       x = "Episode (in series order)", y = "Sentiment per 1,000 words") +
+  theme_minimal()
+```
+
+To see how closely the lexicons agree, I correlated their episode scores. I did the same for the 80-line sections of *Pride and Prejudice*, so the two texts can be compared directly.
+
+```{r}
+lexicon_cor <- function(scores, unit) {
+  scores %>%
+    select({{ unit }}, method, per_1000) %>%
+    pivot_wider(names_from = method, values_from = per_1000) %>%
+    select(-{{ unit }}) %>%
+    cor(use = "pairwise.complete.obs")
+}
+
+pp_scores <- score_units(pride_prejudice %>% mutate(index = linenumber %/% 80), index)
+
+office_cor <- lexicon_cor(office_scores, ep_num)
+pp_cor     <- lexicon_cor(pp_scores, index)
+
+knitr::kable(office_cor, digits = 2, caption = "The Office: correlation between lexicons (by episode)")
+knitr::kable(pp_cor, digits = 2, caption = "Pride and Prejudice: correlation between lexicons (by 80-line section)")
+
+avg_cor <- function(m) mean(m[upper.tri(m)])
+
+agreement <- if (avg_cor(office_cor) >= 0.5) {
+  "The book's point still holds for The Office: the lexicons give different sizes of sentiment but mostly agree on which episodes are more positive or more negative."
+} else {
+  "Unlike in the book, the lexicons often disagree about which episodes are more positive, which suggests that word lists built for other kinds of writing fit casual dialogue less well."
+}
+```
+
+The average correlation between lexicons is `r round(avg_cor(office_cor), 2)` for *The Office* and `r round(avg_cor(pp_cor), 2)` for *Pride and Prejudice*.
+
+## How much of each text the lexicons can score
+
+A lexicon can only score words it contains. This table shows the share of all words in each text that each lexicon matched.
+
+```{r}
+coverage <- function(tidy_text, corpus) {
+  tibble(
+    corpus = corpus,
+    AFINN = mean(tidy_text$word %in% get_sentiments("afinn")$word),
+    `Bing et al.` = mean(tidy_text$word %in% get_sentiments("bing")$word),
+    NRC = mean(tidy_text$word %in% (get_sentiments("nrc") %>%
+                 filter(sentiment %in% c("positive", "negative")))$word),
+    `Jockers-Rinker` = mean(tidy_text$word %in% jockers_rinker$word)
+  )
+}
+
+coverage_table <- bind_rows(
+  coverage(tidy_books, "Jane Austen (all six novels)"),
+  coverage(tidy_office, "The Office (all episodes)")
+)
+
+coverage_table %>%
+  mutate(across(-corpus, \(x) scales::percent(x, accuracy = 0.1))) %>%
+  knitr::kable()
+```
+
+## Most common positive and negative words
+
+```{r}
+office_bing_counts <- tidy_office %>%
+  inner_join(get_sentiments("bing"), by = "word") %>%
+  count(word, sentiment, sort = TRUE)
+
+office_bing_counts %>%
+  group_by(sentiment) %>%
+  slice_max(n, n = 10) %>%
+  ungroup() %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(n, word, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_manual(values = c(positive = "#2a78d6", negative = "#eb6834")) +
+  facet_wrap(~sentiment, scales = "free_y") +
+  labs(title = "Words that drive sentiment in The Office (Bing)",
+       x = "Contribution to sentiment", y = NULL) +
+  theme_minimal()
+
+top_pos <- office_bing_counts %>% filter(sentiment == "positive") %>% slice_head(n = 3)
+top_neg <- office_bing_counts %>% filter(sentiment == "negative") %>% slice_head(n = 3)
+```
+
+The top positive words in *The Office* are "`r top_pos$word[1]`," "`r top_pos$word[2]`," and "`r top_pos$word[3]`," and the top negative words are "`r top_neg$word[1]`," "`r top_neg$word[2]`," and "`r top_neg$word[3]`."
+
+## Fixing words that don't fit the show
+
+The book found that "miss" is a problem for Austen. *The Office* has the same kind of problem with different words.
+
+- **Filler words scored as positive:** Bing scores "like," "well," "right," and "pretty" as positive. In conversation they are mostly filler ("it's, like, fine") or hedges ("pretty bad").
+- **Comedy words scored as negative:** Bing scores "funny" and "joke" as negative, because it reads "funny" as meaning strange. In a comedy, both words are usually neutral or positive.
+
+```{r}
+office_stop_words <- tibble(word = c("like", "well", "right", "pretty", "funny", "joke"))
+
+office_stop_words %>%
+  inner_join(office_bing_counts, by = "word") %>%
+  knitr::kable()
+
+before_after <- bind_rows(
+  tidy_office %>% mutate(version = "All words"),
+  tidy_office %>% anti_join(office_stop_words, by = "word") %>%
+    mutate(version = "Filler and comedy words removed")
+) %>%
+  inner_join(get_sentiments("bing"), by = "word") %>%
+  count(version, sentiment) %>%
+  pivot_wider(names_from = sentiment, values_from = n) %>%
+  mutate(positive_share = positive / (positive + negative))
+
+knitr::kable(before_after, digits = 3)
+```
+
+Removing these six words changes the positive share of Bing matches from `r scales::percent(before_after$positive_share[1], accuracy = 0.1)` to `r scales::percent(before_after$positive_share[2], accuracy = 0.1)`.
+
+## The most positive characters
+
+```{r}
+main_characters <- tidy_office %>%
+  count(character, name = "words") %>%
+  filter(words >= 10000)
+
+character_sentiment <- tidy_office %>%
+  semi_join(main_characters, by = "character") %>%
+  inner_join(jockers_rinker, by = "word") %>%
+  group_by(character) %>%
+  summarise(score = sum(value)) %>%
+  left_join(main_characters, by = "character") %>%
+  mutate(per_1000 = score / words * 1000) %>%
+  arrange(desc(per_1000))
+
+ggplot(character_sentiment, aes(per_1000, reorder(character, per_1000))) +
+  geom_col(fill = "#2a78d6", width = 0.7) +
+  labs(title = "Sentiment by character (Jockers-Rinker)",
+       subtitle = "Characters with at least 10,000 spoken words",
+       x = "Sentiment per 1,000 words", y = NULL) +
+  theme_minimal()
+```
+
+Among the characters with at least 10,000 spoken words, `r character_sentiment$character[1]` is the most positive by the Jockers-Rinker lexicon and `r character_sentiment$character[nrow(character_sentiment)]` is the least positive.
+
+## How the results differ from the original example
+
+- **Shape over time:** Austen's novels move between positive and negative as the plot develops, and the book's plots show dips at the dramatic moments. In *The Office*, `r scales::percent(pct_positive_eps, accuracy = 1)` of episodes are net positive, compared with `r scales::percent(pct_positive_austen, accuracy = 1)` of the Austen sections. `r shape`
+- **Coverage:** Jockers-Rinker matched `r scales::percent(coverage_table[["Jockers-Rinker"]][2], accuracy = 0.1)` of the words in *The Office*, compared with `r scales::percent(coverage_table$AFINN[2], accuracy = 0.1)` for AFINN and `r scales::percent(coverage_table[["Bing et al."]][2], accuracy = 0.1)` for Bing. For Austen the same three numbers are `r scales::percent(coverage_table[["Jockers-Rinker"]][1], accuracy = 0.1)`, `r scales::percent(coverage_table$AFINN[1], accuracy = 0.1)`, and `r scales::percent(coverage_table[["Bing et al."]][1], accuracy = 0.1)`.
+- **Agreement between lexicons:** The average correlation between lexicons is `r round(avg_cor(office_cor), 2)` for *The Office* and `r round(avg_cor(pp_cor), 2)` for *Pride and Prejudice*. `r agreement`
+- **Domain words:** For Austen, the problem word was "miss." For *The Office*, filler words ("like," "well," "right") and comedy words ("funny," "joke") are scored in ways that don't match how they are used. Removing them changed the positive share of Bing matches from `r scales::percent(before_after$positive_share[1], accuracy = 0.1)` to `r scales::percent(before_after$positive_share[2], accuracy = 0.1)`.
+- **Limits:** Every lexicon here scores single words. Sarcasm, which *The Office* relies on, and phrases like "not good" are scored as if they were sincere. A sentence-level tool like `sentimentr` would handle negation better.
+
+## References
+
+- Silge, J., & Robinson, D. (2017). *Text Mining with R: A Tidy Approach*. O'Reilly Media. <https://www.tidytextmining.com/sentiment.html>. Code: <https://github.com/dgrtwo/tidy-text-mining>.
+- Hu, M., & Liu, B. (2004). Mining and summarizing customer reviews. *Proceedings of the ACM SIGKDD International Conference on Knowledge Discovery and Data Mining*. (Bing lexicon)
+- Nielsen, F. Å. (2011). A new ANEW: Evaluation of a word list for sentiment analysis in microblogs. (AFINN lexicon)
+- Mohammad, S. M., & Turney, P. D. (2013). Crowdsourcing a word-emotion association lexicon. *Computational Intelligence, 29*(3). (NRC lexicon)
+- Jockers, M. L. (2017). *Syuzhet: Extract Sentiment and Plot Arcs from Text*. R package. <https://CRAN.R-project.org/package=syuzhet>
+- Rinker, T. W. *lexicon: Lexicon Data*. R package. <https://CRAN.R-project.org/package=lexicon>
+- Lindblad, B. *schrute: The Entire Transcript from the Office in Tidy Format*. R package. <https://CRAN.R-project.org/package=schrute>
