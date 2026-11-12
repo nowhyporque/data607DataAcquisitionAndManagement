@@ -1,0 +1,138 @@
+---
+title: "How Spotify Recommends Music"
+subtitle: "A Scenario Design Analysis of Spotify's Recommender System"
+author: "Kevin Villa"
+date: today
+format:
+  html:
+    embed-resources: true
+    toc: true
+---
+
+## Why Spotify
+
+Spotify is one of the clearest examples of a business built on recommendations. As of its third quarter 2026 report, it had 788 million monthly active users and 306 million paying subscribers (Hypebot, 2026). Every one of them sees a different home page, and many of the playlists people play most, like Discover Weekly, Release Radar, and the Daily Mixes, are put together by algorithms rather than by people. That makes Spotify a good system to study. Its recommendations are easy to see from the outside, and the company has published a lot about how they work.
+
+## Part 1: Scenario Design
+
+Scenario Design (Temkin, 2004) asks three questions: Who are the target users? What are their key goals? How can we help them accomplish those goals?
+
+### Should it be done twice?
+
+Yes. Spotify sits in the middle of a market with more than one side. Listeners want to hear music they love. Spotify wants listeners to stay subscribed, and it also has to manage what it pays to rights holders. The goals overlap, since a listener who keeps finding good music keeps paying, but they are not the same. A recommendation that is cheaper for Spotify to stream is not always the best one for the listener. Artists are a third group with their own goal, which is to get heard. To keep this focused, I did the full analysis for listeners and for Spotify, and I note the artist side where it matters.
+
+### Scenario Design for Spotify's listeners
+
+**1. Who are the target users?**
+
+Spotify's listeners range from people who put on background music while they work to dedicated fans who dig through new releases every Friday. Most fall into a few groups:
+
+- Casual listeners who want something good playing with little effort
+- Explorers who actively look for new artists and genres
+- Fans who follow specific artists and want to hear everything they release
+- Situational listeners who pick music for an activity, like the gym, studying, a commute, or sleep
+- More and more, podcast and audiobook listeners, since Spotify now recommends all three
+
+**2. What are their key goals?**
+
+- Hear music they like right away without having to search
+- Discover new music that matches their taste without wasting time on bad picks
+- Never miss a new release from the artists they follow
+- Get the right music for the moment, like something calm at night or something loud for a workout
+- Keep their recommendations from being thrown off by music they don't actually like, such as a kid's songs, sleep sounds, or a song played once at a party
+
+**3. How can Spotify help them accomplish those goals?**
+
+- Personalized playlists that are ready to play, like Discover Weekly (new to you), Release Radar (new from artists you follow), and Daily Mixes (your favorites grouped by style)
+- A home page that changes with the time of day and recent listening
+- Recommendations that explain themselves, such as "Because you listened to..."
+- Tools to correct the system, like hiding songs, excluding a playlist from your taste profile, and the newer Taste Profile editor
+
+### Scenario Design for Spotify the company
+
+**1. Who are the target users?**
+
+Here the "users" of the recommender are the teams inside Spotify that run the business: product, growth, and the people who manage what Spotify pays for content. Spotify's leadership and investors care about the same outcomes.
+
+**2. What are their key goals?**
+
+- Keep users listening and keep them subscribed, since retention is the core of the business
+- Turn free users into paying Premium subscribers
+- Get users to try more of the catalog, including podcasts and audiobooks, not just music
+- Manage content costs, since what Spotify pays depends on what gets streamed
+- Earn trust with listeners and artists, so people believe the recommendations are honest
+
+**3. How can the recommender help accomplish those goals?**
+
+- Make personalized playlists a habit, like Discover Weekly every Monday and Release Radar every Friday, so people come back on a schedule
+- Use features that only paying users get, like the AI DJ and Prompted Playlists, to give free users a reason to upgrade
+- Balance music, podcasts, and audiobooks on the home page so newer content types get seen
+- Promote some tracks through programs like Discovery Mode, where artists accept a lower royalty in exchange for more exposure. This is also where the company's goals and the listener's goals can pull apart.
+
+## Part 2: Reverse Engineering Spotify's Recommender
+
+### What you can see in the app
+
+Using the app as a regular listener, the recommender shows up almost everywhere:
+
+- **The home page** is made of rows ("shelves"), each with a label explaining it, like "Because you listened to Frank Ocean" or "Jump back in." The rows change with the time of day.
+- **Discover Weekly** is a 30 song playlist of music you haven't played, updated every Monday.
+- **Release Radar** is new music from artists you follow or listen to, updated every Friday.
+- **Daily Mixes** group your favorite music by style and mix in songs you haven't heard.
+- **Radio and Autoplay** keep playing similar songs when a song or album ends.
+- **The AI DJ** picks songs and talks between them in a generated voice.
+- **Prompted Playlists** let you describe what you want in your own words and build a playlist from your listening history.
+- **Taste Profile** shows how Spotify understands your taste and lets you edit it.
+
+### How it likely works under the hood
+
+Putting Spotify's own research and announcements together, the system looks like several methods working together rather than one algorithm.
+
+**1. Collaborative filtering from playlists.** Discover Weekly launched in the summer of 2015. Its core was collaborative filtering based on how often songs appear together on user made playlists. If two songs keep showing up on the same playlists, Spotify treats them as similar (MIT Technology Review, 2022). This is the same basic idea as Amazon's item to item collaborative filtering (Linden, Smith, & York, 2003), which recommends items similar to the ones a customer already bought instead of looking for similar customers. Both approaches scale well because the item to item similarities can be computed ahead of time. Spotify's version is driven by playlists instead of purchases, and with millions of user made playlists, it has a huge amount of signal.
+
+**2. Content based models for new music.** Collaborative filtering has a well known weakness: it can't recommend a song nobody has played yet. As Sander Dieleman wrote while interning at Spotify, "if there is no usage data to analyze, the collaborative filtering approach breaks down" (Dieleman, 2014). His solution was to train a neural network on the audio itself to predict where a new song would sit in the collaborative filtering model. That lets a brand new song by an unknown artist be recommended based on how it sounds. Spotify also uses text and genre data, much of it from The Echo Nest, a music data company it acquired, to catch the obvious mistakes pure collaborative filtering can make (MIT Technology Review, 2022). This is similar to how the New York Times blended article text with reader clicks so it could recommend brand new articles (Spangher, 2015).
+
+**3. Bandits to choose what goes on the home page.** The home page is a ranking problem: which shelves to show, in what order, and with what explanation. Spotify researchers built a system called BaRT ("bandits for recommendations as treatments") for this. It mostly shows what it predicts you'll like (exploit), but sometimes tries something new to learn more about you (explore). It takes context into account, like time of day and recent listening, and treats each explanation, such as "Because you listened to...", as part of what is being tested (McInerney et al., 2018). This explains why the home page looks different in the morning than at night.
+
+**4. Generative AI on top.** The newest layer uses large language models. The AI DJ, launched in February 2023 for Premium users in the U.S. and Canada, uses Spotify's personalization to pick songs and OpenAI technology to write the commentary, read in an AI voice (Spotify, 2023). Prompted Playlists, rolled out to Premium users in the U.S. and Canada in January 2026, build a playlist from a written request using a listener's entire listening history (Perez, 2026). In March 2026, Spotify started testing Taste Profile, which lets listeners see how Spotify understands their taste, flag what is wrong, and add context like "workout music" (Spotify, 2026).
+
+### Signals the system probably uses
+
+From the features above, the system likely learns from:
+
+- **Strong positive signals:** saving a song, adding it to a playlist, following an artist, and replaying
+- **Negative signals:** skipping in the first few seconds and hiding a song
+- **Context:** time of day, device, and whether the listener is in a playlist, an album, or the DJ
+- **Content:** the audio itself, genre tags, and text written about the music
+- **Business inputs:** Discovery Mode, where artists give up 30% of their royalties on promoted streams in exchange for more exposure in Radio and Autoplay. Spotify expanded the program to Daily Mixes in 2024 
+
+## Part 3: Recommendations to Improve Spotify
+
+**1. Let listeners choose how adventurous their recommendations are.** BaRT already balances showing safe picks against trying new ones, but the listener has no say in that balance. A simple "discovery dial" on Discover Weekly, from "close to what I like" to "surprise me," would hand that choice to the user. Spotify would also learn more from it, since it would show directly how much variety each listener wants.
+
+**2. Clearly label promoted recommendations.** Discovery Mode lets money affect what gets recommended, and listeners can't tell when that happens. Musicians' groups have called it a "pay for play" scheme (The Playground, n.d.b). A small label on promoted tracks would protect trust, which is one of Spotify's own goals in the company scenario. It would also make it possible to measure whether promoted tracks get skipped more often.
+
+**3. Add separate listening modes instead of one taste profile.** Taste Profile is a good start, but it still treats each person as having one taste. Most people have several, like music for work, the gym, sleep, and a kid's music in the car. Letting listeners keep separate modes, each with its own recommendations, would stop sleep sounds and kids' songs from leaking into Discover Weekly. Today the only fix is to exclude playlists one at a time.
+
+**4. Make full album recommendations a real feature.** Spotify's recommendations are built around single songs and playlists. Many fans still listen to full albums, and songs pulled out of an album can lose their context. A "Discover Weekly for albums," with a few full albums a week matched to your taste, would serve album listeners. It would also give Spotify a new kind of signal: finishing a whole album shows much stronger interest than finishing one song.
+
+**5. Explain every recommendation, not just the home page rows.** The "Because you listened to..." labels already help. Extending them to each song in Discover Weekly ("recommended because fans of Frank Ocean save this") would make the system easier to trust. Combined with Taste Profile, listeners could then fix the reason behind a bad recommendation, not just the single song.
+
+## Conclusion
+
+Spotify's recommender is several methods working together. Collaborative filtering on playlists finds what similar listeners enjoy. Audio and text models handle new music with no listening history yet. Bandits decide what to show on the home page and when. Generative AI is now being added on top as a new way to ask for music. Doing Scenario Design twice shows the main tension in the system. Listeners want the best music for them, while Spotify also has to manage costs and grow the business. Most of my recommendations come from that gap. The more control and transparency Spotify gives listeners, the more they will trust what it recommends, and trust is what keeps them subscribed.
+
+## References
+
+- Dieleman, S. (2014, August 5). *Recommending music on Spotify with deep learning*. <https://sander.ai/2014/08/05/spotify-cnns.html>
+- Hypebot. (2026, October 22). *Spotify Q3 2026: 788M users and 306M subscribers*. <https://www.hypebot.com/spotify-q3-2026-788m-users-and-306m-subscribers/>
+- Linden, G., Smith, B., & York, J. (2003). Amazon.com recommendations: Item-to-item collaborative filtering. *IEEE Internet Computing, 7*(1), 76–80.
+- McInerney, J., Lacker, B., Hansen, S., Higley, K., Bouchard, H., Gruson, A., & Mehrotra, R. (2018). Explore, exploit, and explain: Personalizing explainable recommendations with bandits. *Proceedings of the 12th ACM Conference on Recommender Systems (RecSys '18)*.
+- MIT Technology Review. (2022, July 13). *I was there when: AI became the DJ* [Podcast episode]. <https://www.technologyreview.com/2022/07/13/1057108/i-was-there-when-ai-became-the-dj/>
+- Perez, S. (2026, January 22). Spotify brings AI-powered Prompted Playlists to the U.S. and Canada. *TechCrunch*. <https://techcrunch.com/2026/01/22/spotify-brings-ai-powered-prompted-playlists-to-the-u-s-and-canada/>
+- Spangher, A. (2015). *Building the next New York Times recommendation engine*. The New York Times Open Blog.
+- Spotify. (2023, February 22). *Spotify debuts a new AI DJ, right in your pocket*. <https://newsroom.spotify.com/2023-02-22/spotify-debuts-a-new-ai-dj-right-in-your-pocket/>
+- Spotify. (2026, March 13). *A new era of personalization: Shape your Taste Profile on Spotify*. <https://newsroom.spotify.com/2026-03-13/taste-profile-beta-announcement/>
+- Temkin, B. D. (2004). *Scenario design: A disciplined approach to customer experience*. Forrester Research.
+- The Playground. (n.d.-a). *Spotify faces criticism for 30% royalty deduction in exchange for exposure in Discovery Feed*. <https://theplayground.co.uk/?p=34696>
+- The Playground. (n.d.-b). *Four years on, Spotify's 'Discovery Mode' is taking shape*. <https://theplayground.co.uk/four-years-on-spotifys-discovery-mode-is-taking-shape/>
