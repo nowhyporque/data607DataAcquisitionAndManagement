@@ -1,0 +1,307 @@
+---
+title: "Project 4: Classifying Spam and Ham Emails"
+author: "Kevin Villa"
+date: today
+format:
+  html:
+    embed-resources: true
+    toc: true
+execute:
+  warning: false
+  message: false
+---
+
+## Goal
+
+The goal of this project is to train a model on emails that are already labeled as **spam** or **ham** (not spam), and then use it to predict the label of new emails it has never seen. I use the SpamAssassin public corpus, build a document term matrix from the words in each email, and compare two classifiers: a Naive Bayes model that I build step by step, and a lasso logistic regression.
+
+## Getting the data
+
+The corpus comes from <https://spamassassin.apache.org/old/publiccorpus/>. I use one ham set and one spam set:
+
+- `20030228_easy_ham.tar.bz2`: 2,500 normal emails
+- `20050311_spam_2.tar.bz2`: 1,397 spam emails
+
+Each file is compressed twice (a `.tar` archive inside a `.bz2` file). R's `untar()` handles both steps at once, so there is no need to unzip twice by hand.
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(purrr)
+library(tidytext)
+library(ggplot2)
+library(glmnet)
+
+base_url <- "https://spamassassin.apache.org/old/publiccorpus/"
+files <- c(ham = "20030228_easy_ham.tar.bz2", spam = "20050311_spam_2.tar.bz2")
+
+dir.create("spamham", showWarnings = FALSE)
+for (f in files) {
+  local_file <- file.path("spamham", f)
+  if (!file.exists(local_file)) {
+    download.file(paste0(base_url, f), local_file, mode = "wb")
+  }
+}
+
+if (!dir.exists("spamham/easy_ham")) untar(file.path("spamham", files["ham"]), exdir = "spamham")
+if (!dir.exists("spamham/spam_2"))   untar(file.path("spamham", files["spam"]), exdir = "spamham")
+
+list.files("spamham")
+```
+
+The code downloads the files only the first time, then reuses them.
+
+## Reading the emails
+
+Every email is a separate text file. Each one starts with a header (who sent it, the servers it passed through, dates) followed by a blank line and then the body.
+
+I keep only the **subject line and the body**. The headers include server names and dates that are different for the spam and ham collections. A model could use those to get the right answer without learning anything about what spam looks like, which would make it look better than it really is.
+
+```{r}
+read_email <- function(path) {
+  lines <- readLines(path, warn = FALSE, encoding = "latin1")
+  lines <- iconv(lines, from = "latin1", to = "UTF-8", sub = "")
+  blank <- which(lines == "")[1]
+  if (is.na(blank)) blank <- length(lines)
+  header  <- lines[seq_len(blank)]
+  body    <- lines[-seq_len(blank)]
+  subject <- str_remove(str_subset(header, "^Subject:")[1], "^Subject:\\s*")
+  paste(coalesce(subject, ""), paste(body, collapse = " "))
+}
+
+email_files <- bind_rows(
+  tibble(path = list.files("spamham/easy_ham", full.names = TRUE), label = "ham"),
+  tibble(path = list.files("spamham/spam_2",   full.names = TRUE), label = "spam")
+) |>
+  filter(basename(path) != "cmds")
+
+emails <- email_files |>
+  mutate(doc_id = row_number(),
+         text   = map_chr(path, read_email),
+         label  = factor(label, levels = c("ham", "spam"))) |>
+  select(doc_id, label, text)
+
+count(emails, label)
+```
+
+Each folder also has a file called `cmds`, which is a list of commands used to build the corpus, not an email, so I dropped it.
+
+## Cleaning the text
+
+```{r}
+clean_text <- function(x) {
+  x |>
+    str_to_lower() |>
+    str_replace_all("<[^>]+>", " ") |>                 # remove HTML tags
+    str_replace_all("https?://\\S+|www\\.\\S+", " urltoken ") |>
+    str_replace_all("\\S+@\\S+", " emailtoken ") |>
+    str_replace_all("\\$\\d[\\d,.]*", " moneytoken ") |>
+    str_replace_all("&[a-z]+;", " ")                   # remove HTML codes like &nbsp;
+}
+
+emails <- emails |> mutate(text = clean_text(text))
+```
+
+Many spam emails are written in HTML, so I removed the HTML tags. I replaced every link, email address, and dollar amount with a single placeholder word (`urltoken`, `emailtoken`, `moneytoken`). Each link is different, but the fact that an email contains links or dollar amounts is useful information.
+
+## Splitting into training and test sets
+
+I hold out 20% of the emails as a test set. The model never sees these while it is trained, so they show how well it handles new emails. The split is stratified, so spam makes up the same share of each set.
+
+```{r}
+set.seed(607)
+train_ids <- emails |>
+  group_by(label) |>
+  slice_sample(prop = 0.8) |>
+  pull(doc_id)
+
+emails <- emails |> mutate(set = if_else(doc_id %in% train_ids, "train", "test"))
+
+count(emails, set, label)
+```
+
+## Building the document-term matrix
+
+```{r}
+tokens <- emails |>
+  unnest_tokens(word, text) |>
+  filter(str_detect(word, "^[a-z]{3,20}$")) |>
+  anti_join(stop_words, by = "word")
+
+vocab <- tokens |>
+  filter(set == "train") |>
+  distinct(doc_id, word) |>
+  count(word, name = "n_docs") |>
+  filter(n_docs >= 20) |>
+  pull(word)
+
+word_counts <- tokens |>
+  filter(word %in% vocab) |>
+  count(doc_id, word)
+
+length(vocab)
+```
+
+Each email is split into single words. I kept words of 3 to 20 letters, removed common stop words like "the" and "and," and kept only words that appear in at least 20 training emails. Rare words, like names or typos, add noise without helping the model. The vocabulary comes only from the training set, so nothing from the test emails leaks into the model.
+
+## Model 1: Naive Bayes, built step by step
+
+Naive Bayes asks: given the words in this email, is it more likely to be spam or ham? It learns how often each word appears in spam and in ham, then adds up the evidence for each word in a new email. It's called "naive" because it treats every word as independent of the others.
+
+```{r}
+train_labels <- emails |> filter(set == "train") |> select(doc_id, label)
+
+priors <- train_labels |>
+  count(label) |>
+  mutate(log_prior = log(n / sum(n)))
+
+word_probs <- word_counts |>
+  inner_join(train_labels, by = "doc_id") |>
+  count(label, word, wt = n) |>
+  complete(label, word = vocab, fill = list(n = 0)) |>
+  group_by(label) |>
+  mutate(log_prob = log((n + 1) / (sum(n) + length(vocab)))) |>
+  ungroup()
+
+nb_scores <- word_counts |>
+  inner_join(emails |> filter(set == "test") |> select(doc_id), by = "doc_id") |>
+  inner_join(word_probs |> select(label, word, log_prob), by = "word",
+             relationship = "many-to-many") |>
+  group_by(doc_id, label) |>
+  summarise(score = sum(n * log_prob), .groups = "drop") |>
+  left_join(priors |> select(label, log_prior), by = "label") |>
+  mutate(score = score + log_prior)
+
+nb_pred <- emails |>
+  filter(set == "test") |>
+  select(doc_id, truth = label) |>
+  left_join(nb_scores |>
+              group_by(doc_id) |>
+              slice_max(score, n = 1, with_ties = FALSE) |>
+              select(doc_id, pred = label),
+            by = "doc_id") |>
+  mutate(pred = factor(coalesce(as.character(pred), "ham"), levels = c("ham", "spam")))
+```
+
+Two details make this work. First, adding 1 to every count (Laplace smoothing) means a word that never appeared in spam during training doesn't make the probability of spam exactly zero. Second, I add up logs of probabilities instead of multiplying the probabilities, because multiplying hundreds of small numbers rounds down to zero. A test email with none of the vocabulary words gets labeled ham by default.
+
+## Model 2: Lasso logistic regression
+
+The second model is logistic regression with a lasso penalty, from the `glmnet` package. It learns a weight for every word. The lasso pushes the weights of unhelpful words to exactly zero, so the model keeps only the words that matter. I use cross validation (`cv.glmnet`) to choose how strong the penalty should be.
+
+```{r}
+dtm <- word_counts |>
+  cast_sparse(doc_id, word, n)
+
+doc_info <- emails |>
+  filter(doc_id %in% as.integer(rownames(dtm))) |>
+  arrange(match(doc_id, as.integer(rownames(dtm))))
+
+x_train <- dtm[doc_info$set == "train", ]
+y_train <- doc_info$label[doc_info$set == "train"]
+x_test  <- dtm[doc_info$set == "test", ]
+
+set.seed(607)
+lasso <- cv.glmnet(x_train, y_train, family = "binomial", alpha = 1)
+
+lasso_pred <- tibble(
+  doc_id = doc_info$doc_id[doc_info$set == "test"],
+  prob_spam = as.numeric(predict(lasso, x_test, s = "lambda.1se", type = "response"))
+) |>
+  right_join(emails |> filter(set == "test") |> select(doc_id, truth = label), by = "doc_id") |>
+  mutate(prob_spam = coalesce(prob_spam, 0),
+         pred = factor(if_else(prob_spam >= 0.5, "spam", "ham"), levels = c("ham", "spam")))
+```
+
+`cast_sparse()` turns the tidy word counts into a document-term matrix: one row per email, one column per word. Most entries are zero, so it's stored as a sparse matrix to save memory. As with Naive Bayes, a test email with no vocabulary words is labeled ham.
+
+## Results
+
+```{r}
+evaluate <- function(pred, model) {
+  tibble(
+    model = model,
+    accuracy  = mean(pred$pred == pred$truth),
+    precision = sum(pred$pred == "spam" & pred$truth == "spam") / sum(pred$pred == "spam"),
+    recall    = sum(pred$pred == "spam" & pred$truth == "spam") / sum(pred$truth == "spam"),
+    false_positives = sum(pred$pred == "spam" & pred$truth == "ham"),
+    false_negatives = sum(pred$pred == "ham" & pred$truth == "spam")
+  )
+}
+
+results <- bind_rows(evaluate(nb_pred, "Naive Bayes"),
+                     evaluate(lasso_pred, "Lasso logistic regression"))
+
+knitr::kable(results, digits = 3)
+```
+
+- **Accuracy:** the share of test emails labeled correctly.
+- **Precision:** of the emails the model called spam, the share that really were spam.
+- **Recall:** of the real spam emails, the share the model caught.
+- **False positives:** real emails sent to the spam folder. These are the costly mistakes, since a person could miss an important email.
+- **False negatives:** spam that got through to the inbox.
+
+```{r}
+table(Predicted = lasso_pred$pred, Actual = lasso_pred$truth)
+```
+
+The confusion matrix shows the lasso model's test results. The diagonal holds the correct predictions, and the other two cells hold the two kinds of mistakes.
+
+**Answer:** Naive Bayes labeled `r scales::percent(results$accuracy[1], accuracy = 0.1)` of the test emails correctly, and the lasso model labeled `r scales::percent(results$accuracy[2], accuracy = 0.1)` correctly. The lasso model sent `r results$false_positives[2]` real emails to spam and let `r results$false_negatives[2]` spam emails through, out of `r nrow(lasso_pred)` test emails.
+
+## Which words matter most?
+
+```{r}
+#| fig-height: 6
+coefs <- coef(lasso, s = "lambda.1se")
+word_weights <- tibble(word = rownames(coefs), weight = as.numeric(coefs)) |>
+  filter(word != "(Intercept)", weight != 0)
+
+word_weights |>
+  mutate(direction = if_else(weight > 0, "Points to spam", "Points to ham")) |>
+  group_by(direction) |>
+  slice_max(abs(weight), n = 12) |>
+  ungroup() |>
+  ggplot(aes(weight, reorder(word, weight), fill = direction)) +
+  geom_col() +
+  scale_fill_manual(values = c("Points to spam" = "#eb6834", "Points to ham" = "#2a78d6")) +
+  labs(title = "Words with the strongest weights in the lasso model",
+       x = "Weight (positive means more likely spam)", y = NULL, fill = NULL) +
+  theme_minimal() +
+  theme(legend.position = "top")
+```
+
+The lasso kept `r nrow(word_weights)` of the `r length(vocab)` vocabulary words and set the rest to zero. Words on the right push an email toward spam, and words on the left push it toward ham.
+
+The spam side has the words you would expect, like "click," "guaranteed," and "prices." The ham side is more interesting. Many of the strongest ham words, like "satalk," "spambayes," and "sadev," are names of the mailing lists the ham emails were collected from, and "wrote" comes from replies that quote an earlier message ("Jim wrote:"). So part of what the model learned is that emails from these particular mailing lists are real. That works on this corpus, but it would not carry over to someone else's inbox, where those mailing lists don't exist.
+
+## The trade-off between the two kinds of mistakes
+
+A spam filter doesn't have to use 0.5 as its cutoff. Raising the cutoff means the model needs to be more confident before calling something spam. That lowers false positives, but more spam slips through.
+
+```{r}
+thresholds <- map_dfr(c(0.3, 0.5, 0.7, 0.9), \(t) {
+  pred_t <- lasso_pred |>
+    mutate(pred = factor(if_else(prob_spam >= t, "spam", "ham"), levels = c("ham", "spam")))
+  evaluate(pred_t, paste("Cutoff", t))
+})
+
+knitr::kable(thresholds |> select(model, accuracy, false_positives, false_negatives), digits = 3)
+```
+
+For a real inbox, a false positive (losing an important email) is usually worse than a false negative (seeing one more spam email), so a higher cutoff can make sense even if overall accuracy drops slightly.
+
+## Conclusion
+
+Both models separate spam from ham very well using only the words in the subject and body. The lasso model also shows which words drive its decisions, which makes it easier to explain and check. Three choices mattered for getting an honest result:
+
+- I left out the email headers, which would have let the model shortcut the problem.
+- I built the vocabulary only from the training emails.
+- I tested on emails the model never saw during training.
+
+There are two limitations. First, this corpus is from the early 2000s, and spam today looks different. Second, the ham emails come from a few mailing lists, and the model leans on those list names. A filter for real use would need fresh, more varied examples of both spam and ham.
+
+## Source
+
+The Apache SpamAssassin Project. *SpamAssassin public mail corpus*. <https://spamassassin.apache.org/old/publiccorpus/>
